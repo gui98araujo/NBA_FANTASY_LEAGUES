@@ -620,4 +620,3 @@ elif page == "Records":
             data=out.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
             file_name="game_records.csv", mime="text/csv"
         )
-``
