@@ -2,37 +2,76 @@
 # -*- coding: utf-8 -*-
 import time
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
 from nba_api.stats.endpoints import leaguegamelog
 
 # =========================
-# Page Config + CSS (black theme)
+# ----- Page Config + CSS
 # =========================
 st.set_page_config(page_title="Fantasy NBA Records", page_icon="🏀", layout="wide")
 
+# Light theme override: white background, black text
 st.markdown(
     """
     <style>
-    .stApp { background-color: #000000; color: #F1F1F1; }
-    [data-testid="stSidebar"] { background-color: #111111; }
-    .stButton > button, .stDownloadButton > button {
-        background-color: #00E5FF !important; color: #000 !important; border: none; font-weight: 600;
+    :root {
+        --primary-color: #0057FF;
     }
-    .stSelectbox label, .stNumberInput label, .stCheckbox label, .stRadio label, .stTextInput label {
-        color: #F1F1F1 !important;
+    .stApp {
+        background-color: #FFFFFF;
+        color: #000000;
     }
-    .stDataFrame table { color: #F1F1F1; }
+    /* containers, cards, widgets */
+    .st-emotion-cache-1r4qj8v, .st-emotion-cache-uhkwxv, .st-emotion-cache-1dp5vir, .st-emotion-cache-12fmjuu,
+    .block-container, .stDataFrame, .stMarkdown, .stText, .stSelectbox, .stNumberInput, .stCheckbox, .stRadio {
+        color: #000000 !important;
+        background-color: #FFFFFF !important;
+    }
+    /* labels */
+    label, .stSelectbox label, .stNumberInput label, .stCheckbox label, .stTextInput label, .stRadio label {
+        color: #000000 !important;
+    }
+    /* titles, headers */
+    h1, h2, h3, h4, h5, h6, p, span, div, code, .markdown-text-container {
+        color: #000000 !important;
+    }
+    /* buttons */
+    .stButton>button, .stDownloadButton>button {
+        background-color: #0057FF !important;
+        color: #FFFFFF !important;
+        border: 0;
+        border-radius: 6px;
+    }
+    .stButton>button:hover, .stDownloadButton>button:hover {
+        background-color: #0043C6 !important;
+    }
+    /* tables */
+    .stDataFrame table, .stDataFrame thead tr th, .stDataFrame tbody tr td {
+        color: #000000 !important;
+        background-color: #FFFFFF !important;
+    }
+    /* sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #F7F9FC !important;
+        color: #000000 !important;
+    }
+    /* inputs on light bg */
+    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {
+        color: #000000 !important;
+        background-color: #FFFFFF !important;
+    }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # =========================
-# Helpers: Seasons
+# ----- Helpers: Seasons
 # =========================
 def season_label_from_start_year(start_year: int) -> str:
     """e.g., 2005 -> '2005-06'"""
@@ -43,18 +82,18 @@ def infer_current_season_label(today: Optional[datetime] = None) -> str:
     start_year = dt.year if dt.month >= 10 else dt.year - 1
     return season_label_from_start_year(start_year)
 
-def seasons_from(start_year: int) -> List[str]:
-    """List seasons from start_year .. current (inclusive)."""
-    last_start_year = int(infer_current_season_label()[:4])
+def all_seasons_available(start_year: int = 1996, end_season: Optional[str] = None) -> List[str]:
+    """
+    Build the list of seasons from start_year to current.
+    LeagueGameLog is stable from ~1996-97 onwards.
+    """
+    last = end_season or infer_current_season_label()
+    last_start_year = int(last[:4])
     return [season_label_from_start_year(y) for y in range(start_year, last_start_year + 1)]
-
-def all_seasons_available(start_year: int = 1996) -> List[str]:
-    """LeagueGameLog is broadly stable from ~1996-97 onwards."""
-    return seasons_from(start_year)
 
 def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     """
-    MATCHUP: 'DEN vs LAL' (home) or 'DEN @ LAL' (away).
+    MATCHUP example: 'DEN vs LAL' (home) or 'DEN @ LAL' (away).
     Returns (team_abbrev, opp_abbrev, is_home)
     """
     parts = str(matchup).split()
@@ -65,7 +104,7 @@ def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     return team, opp, is_home
 
 # =========================
-# Data Fetch
+# ----- Data Fetch
 # =========================
 VALID_SEASON_TYPES = ["Regular Season", "Playoffs"]
 
@@ -102,43 +141,37 @@ def _fetch_player_game_logs_for_season(
         except Exception as e:
             last_err = e
             time.sleep(sleep_sec * attempt)
-    # On persistent failure, warn and return empty dataframe
+    # On persistent failure, return empty frame to keep pipeline going
     st.warning(f"Failed to fetch {season_label} / {season_type}: {last_err}")
     return pd.DataFrame()
 
 @st.cache_data(show_spinner=True, persist=True)
-def load_player_game_logs_from(start_season_label: str, include_playoffs: bool = True) -> pd.DataFrame:
+def load_all_player_game_logs(include_playoffs: bool = True) -> pd.DataFrame:
     """
-    Download player game logs from the chosen start season .. current.
-    Example: '2017-18' => downloads 2017-18 .. current.
-    Cached to avoid re-downloading between runs (until parameters change).
+    Download all available player game logs (1996-97 .. current).
+    Cached to disk (if supported) to avoid re-downloading on subsequent runs.
     """
-    try:
-        start_year = int(start_season_label[:4])
-    except Exception:
-        start_year = 1996
-
-    seasons = seasons_from(start_year)
+    seasons = all_seasons_available(start_year=1996)
     season_types = ["Regular Season"] + (["Playoffs"] if include_playoffs else [])
-
     parts = []
     for s in seasons:
         for t in season_types:
             df = _fetch_player_game_logs_for_season(s, t)
             if not df.empty:
                 parts.append(df)
-
     if not parts:
         return pd.DataFrame()
-
     big = pd.concat(parts, ignore_index=True)
     sort_cols = [c for c in ["GAME_DATE", "GAME_ID", "PLAYER_ID"] if c in big.columns]
     if sort_cols:
         big = big.sort_values(sort_cols).reset_index(drop=True)
     return big
 
+def clear_all_caches():
+    load_all_player_game_logs.clear()
+
 # =========================
-# Fantasy Scoring
+# ----- Fantasy Scoring
 # =========================
 DEFAULT_SCORING: Dict[str, float | bool] = {
     # event weights
@@ -241,21 +274,22 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
     )
     out["fantasy_points"] = fp.astype(float)
 
-    # Cleanup aux
+    # Cleanup aux columns
     for c in ["_ft_missed","_fg3_missed","_b40","_b50","_b15_ast","_b20_reb","_is_dd","_is_td","_dd_points","__TECH__","__FLAG__"]:
         if c in out.columns:
             out.drop(columns=[c], inplace=True)
     return out
 
 # =========================
-# Player Headshots
+# ----- Player Headshots
 # =========================
 def player_headshot_url(player_id: int) -> str:
+    # NBA CDN
     pid = int(player_id)
     return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
 
 # =========================
-# Records helpers
+# ----- Records helpers
 # =========================
 def teams_from_df(df: pd.DataFrame) -> List[str]:
     cols = [c for c in ["TEAM_ABBREVIATION", "TEAM_ABBREV_FROM_MATCHUP"] if c in df.columns]
@@ -267,32 +301,39 @@ def teams_from_df(df: pd.DataFrame) -> List[str]:
     return sorted([v for v in vals if v and v != "nan"])
 
 # =========================
-# Session defaults
+# ----- Session defaults
 # =========================
 if "scoring" not in st.session_state:
     st.session_state["scoring"] = DEFAULT_SCORING.copy()
 if "include_playoffs" not in st.session_state:
     st.session_state["include_playoffs"] = True
-if "start_season_label" not in st.session_state:
-    st.session_state["start_season_label"] = "1996-97"
+if "analysis_start_season" not in st.session_state:
+    st.session_state["analysis_start_season"] = "1996-97"
 if "raw_df" not in st.session_state:
     st.session_state["raw_df"] = pd.DataFrame()
 if "started" not in st.session_state:
     st.session_state["started"] = False
 
 # =========================
-# Sidebar Nav
+# ----- Sidebar Nav
 # =========================
-page = st.sidebar.radio("Navigate", ["Setup", "Records"], index=0)
+page = st.sidebar.radio("Navigate", ["Setup", "Records"], index=0, help="Switch between Setup and Records")
+
 st.sidebar.write("---")
-st.sidebar.info("Tip: Click 'Let's Start' on Setup to download and cache data from your selected season.")
+if st.sidebar.button("Refresh data (clear cache)"):
+    clear_all_caches()
+    st.session_state["raw_df"] = pd.DataFrame()
+    st.session_state["started"] = False
+    st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
+
+st.sidebar.info("Tip: First click **Let's Start** on Setup to download and cache all data.")
 
 # =========================
-# Setup Page
+# ----- Setup Page
 # =========================
 if page == "Setup":
     st.title("⚙️ Setup")
-    st.caption("Set your League Scoring Settings and the starting season. Click 'Let's Start' to download data and begin.")
+    st.caption("Set your League Scoring Settings and analysis start. Click **Let's Start** to download data and begin.")
 
     s = st.session_state["scoring"]
 
@@ -333,33 +374,42 @@ if page == "Setup":
         include_playoffs = st.checkbox("Include Playoffs", value=st.session_state["include_playoffs"], help="Include Playoffs besides Regular Season.")
 
         seasons_all = all_seasons_available(start_year=1996)
-        default_start = st.session_state["start_season_label"]
-        start_idx = seasons_all.index(default_start) if default_start in seasons_all else 0
-        start_season_label = st.selectbox(
-            "Starting season (data will be downloaded from this season onwards)",
-            seasons_all, index=start_idx,
-            help="Example: 2017-18. The app will download from this season up to the current one."
+        # Choose starting season for analysis (filter applied after download)
+        start_idx = 0  # default earliest
+        if st.session_state["analysis_start_season"] in seasons_all:
+            start_idx = seasons_all.index(st.session_state["analysis_start_season"])
+
+        analysis_start = st.selectbox(
+            "Starting season for analysis (filters the leaderboards)", 
+            seasons_all, index=start_idx, 
+            help="Example: 2003-04, 2004-05. The app downloads all seasons, but records will filter from this season onward."
         )
 
         saved = st.form_submit_button("Save Settings")
         if saved:
             st.session_state["scoring"] = s
             st.session_state["include_playoffs"] = include_playoffs
-            st.session_state["start_season_label"] = start_season_label
+            st.session_state["analysis_start_season"] = analysis_start
             st.success("Settings saved.")
 
     st.markdown("### Start")
-    if st.button("Let's Start"):
+    cstart1, cstart2 = st.columns([1,3])
+    with cstart1:
+        start_clicked = st.button("Let's Start")
+    with cstart2:
+        st.caption("Downloads all seasons (1996-97 to current) and caches the dataset for this deployment.")
+
+    if start_clicked:
         st.session_state["include_playoffs"] = include_playoffs
-        st.session_state["start_season_label"] = start_season_label
-        with st.spinner(f"Downloading player game logs from {start_season_label} to current. First run may take several minutes..."):
-            raw = load_player_game_logs_from(start_season_label, include_playoffs=include_playoffs)
+        st.session_state["analysis_start_season"] = analysis_start
+        with st.spinner("Downloading ALL player game logs (1996-97 to current). First run may take several minutes..."):
+            raw = load_all_player_game_logs(include_playoffs=include_playoffs)
         if raw.empty:
-            st.error("No data could be loaded. Try again or change options.")
+            st.error("No data could be loaded. Try again or reduce options.")
         else:
             st.session_state["raw_df"] = raw
             st.session_state["started"] = True
-            st.success(f"Loaded {len(raw):,} player-game rows from {raw['SEASON'].min()} to {raw['SEASON'].max()}. Go to 'Records'.")
+            st.success(f"Loaded {len(raw):,} player-game rows from {raw['SEASON'].min()} to {raw['SEASON'].max()}. Go to **Records**.")
 
     # Preview
     if isinstance(st.session_state.get("raw_df"), pd.DataFrame) and not st.session_state["raw_df"].empty:
@@ -367,28 +417,39 @@ if page == "Setup":
         st.dataframe(st.session_state["raw_df"].head(20), use_container_width=True)
 
 # =========================
-# Records Page
+# ----- Records Page
 # =========================
 elif page == "Records":
     st.title("🏀 Records")
     st.caption("Leaderboards by Season, Career, and Game. Use the filters to customize your view.")
 
     if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
-        st.error("No data available. Please go to the 'Setup' page and click 'Let's Start'.")
+        st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
         st.stop()
 
     raw = st.session_state["raw_df"].copy()
     scoring = st.session_state["scoring"]
+    analysis_start = st.session_state["analysis_start_season"]
 
+    # Filter dataset to analysis start season
+    try:
+        start_year_filter = int(analysis_start[:4])
+    except Exception:
+        start_year_filter = 1996
+    raw["_SEASON_START_YEAR"] = raw["SEASON"].str[:4].astype(int)
+    df = raw.loc[raw["_SEASON_START_YEAR"] >= start_year_filter].copy()
+    df.drop(columns=["_SEASON_START_YEAR"], inplace=True)
+
+    # Compute fantasy points (cached per scoring settings + season window)
     @st.cache_data(show_spinner=False)
-    def compute_fp_cached(df_in: pd.DataFrame, scoring_key: str, start_key: str) -> pd.DataFrame:
+    def compute_fp_cached(df_in: pd.DataFrame, scoring_key: str, window_key: str) -> pd.DataFrame:
         return compute_fantasy_points(df_in, scoring)
 
     scoring_key = str(sorted([(k, scoring[k]) for k in scoring.keys()]))
-    start_key = st.session_state["start_season_label"]
-    df = compute_fp_cached(raw, scoring_key, start_key)
+    window_key = f"{analysis_start}"
+    df = compute_fp_cached(df, scoring_key, window_key)
 
-    # Filters
+    # ---- Filters
     st.subheader("Filters")
     left, right = st.columns([2, 1])
 
@@ -408,7 +469,7 @@ elif page == "Records":
 
     st.markdown("---")
 
-    # Tabs
+    # ---- Tabs
     tab1, tab2, tab3 = st.tabs(["Season Records", "Career Records", "Game Records"])
 
     def add_photo_and_name(dfi: pd.DataFrame) -> pd.DataFrame:
@@ -434,7 +495,7 @@ elif page == "Records":
             },
         )
 
-    # Season Records
+    # ---- Season Records
     with tab1:
         st.subheader("Season Records")
         c1, c2 = st.columns(2)
@@ -481,7 +542,7 @@ elif page == "Records":
             file_name="season_records.csv", mime="text/csv"
         )
 
-    # Career Records
+    # ---- Career Records
     with tab2:
         st.subheader("Career Records")
 
@@ -513,27 +574,34 @@ elif page == "Records":
             file_name="career_records.csv", mime="text/csv"
         )
 
-    # Game Records
+    # ---- Game Records
     with tab3:
         st.subheader("Game Records")
 
-        game_top = df_f.sort_values("fantasy_points", ascending=False).head(top_n).copy()
+        # Top N best single games
+        game_top = (
+            df_f.sort_values("fantasy_points", ascending=False)
+                .head(top_n)
+                .copy()
+        )
+
+        # Ensure helper columns (idempotent, no insert)
         game_top["Team"] = game_top["TEAM_ABBREVIATION"]
         game_top["Opponent"] = game_top.get("OPPONENT_ABBREVIATION", "")
         game_top["Season"] = game_top["SEASON"]
         game_top["Fantasy Points"] = game_top["fantasy_points"]
+        game_top["Game Date"] = pd.to_datetime(game_top.get("GAME_DATE", pd.NaT)).dt.date
 
+        # Output with photo and names
         out = add_photo_and_name(game_top)
         out["Rank"] = range(1, len(out) + 1)
-        # Normalize Game Date as a column
-        if "GAME_DATE" in game_top.columns:
-            game_date = pd.to_datetime(game_top["GAME_DATE"]).dt.date
-        else:
-            game_date = pd.NaT
-        out.insert(5, "Season", out.pop("Season"))
-        out.insert(6, "Game Date", game_date)
-        out.insert(7, "Opponent", game_top["Opponent"])
-        out = out[["Rank","Photo","Player","Team","Season","Game Date","Opponent","Fantasy Points","PLAYER_ID"]]
+
+        cols_order = ["Rank", "Photo", "Player", "Team", "Season", "Game Date", "Opponent", "Fantasy Points", "PLAYER_ID"]
+        for col in cols_order:
+            if col not in out.columns:
+                out[col] = pd.NA
+        out = out[cols_order]
+
         render_table(out.drop(columns=["PLAYER_ID"]))
 
         st.download_button(
@@ -541,3 +609,4 @@ elif page == "Records":
             data=out.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
             file_name="game_records.csv", mime="text/csv"
         )
+``
