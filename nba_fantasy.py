@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import time
 from datetime import datetime
-from typing import List, Dict, Optional, Iterable, Tuple
+from typing import List, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,13 +27,20 @@ st.markdown(
         color: #000000;
     }
     /* containers, cards, widgets */
-    .st-emotion-cache-1r4qj8v, .st-emotion-cache-uhkwxv, .st-emotion-cache-1dp5vir, .st-emotion-cache-12fmjuu,
-    .block-container, .stDataFrame, .stMarkdown, .stText, .stSelectbox, .stNumberInput, .stCheckbox, .stRadio {
+    .block-container,
+    .stDataFrame,
+    .stMarkdown,
+    .stText,
+    .stSelectbox,
+    .stNumberInput,
+    .stCheckbox,
+    .stRadio {
         color: #000000 !important;
         background-color: #FFFFFF !important;
     }
     /* labels */
-    label, .stSelectbox label, .stNumberInput label, .stCheckbox label, .stTextInput label, .stRadio label {
+    label, .stSelectbox label, .stNumberInput label, .stCheckbox label,
+    .stTextInput label, .stRadio label, .stCaption, .st-emotion-cache {
         color: #000000 !important;
     }
     /* titles, headers */
@@ -51,7 +58,9 @@ st.markdown(
         background-color: #0043C6 !important;
     }
     /* tables */
-    .stDataFrame table, .stDataFrame thead tr th, .stDataFrame tbody tr td {
+    .stDataFrame table,
+    .stDataFrame thead tr th,
+    .stDataFrame tbody tr td {
         color: #000000 !important;
         background-color: #FFFFFF !important;
     }
@@ -60,8 +69,10 @@ st.markdown(
         background-color: #F7F9FC !important;
         color: #000000 !important;
     }
-    /* inputs on light bg */
-    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {
+    /* inputs */
+    .stTextInput input,
+    .stNumberInput input,
+    .stSelectbox div[data-baseweb="select"] > div {
         color: #000000 !important;
         background-color: #FFFFFF !important;
     }
@@ -84,7 +95,7 @@ def infer_current_season_label(today: Optional[datetime] = None) -> str:
 
 def all_seasons_available(start_year: int = 1996, end_season: Optional[str] = None) -> List[str]:
     """
-    Build the list of seasons from start_year to current.
+    Build list of seasons from start_year to current.
     LeagueGameLog is stable from ~1996-97 onwards.
     """
     last = end_season or infer_current_season_label()
@@ -93,8 +104,7 @@ def all_seasons_available(start_year: int = 1996, end_season: Optional[str] = No
 
 def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     """
-    MATCHUP example: 'DEN vs LAL' (home) or 'DEN @ LAL' (away).
-    Returns (team_abbrev, opp_abbrev, is_home)
+    'DEN vs LAL' (home) or 'DEN @ LAL' (away) -> (team, opp, is_home)
     """
     parts = str(matchup).split()
     if len(parts) != 3:
@@ -141,7 +151,8 @@ def _fetch_player_game_logs_for_season(
         except Exception as e:
             last_err = e
             time.sleep(sleep_sec * attempt)
-    # On persistent failure, return empty frame to keep pipeline going
+
+    # On persistent failure, warn and return empty to keep flow
     st.warning(f"Failed to fetch {season_label} / {season_type}: {last_err}")
     return pd.DataFrame()
 
@@ -149,7 +160,7 @@ def _fetch_player_game_logs_for_season(
 def load_all_player_game_logs(include_playoffs: bool = True) -> pd.DataFrame:
     """
     Download all available player game logs (1996-97 .. current).
-    Cached to disk (if supported) to avoid re-downloading on subsequent runs.
+    Cached to avoid re-downloading on subsequent runs.
     """
     seasons = all_seasons_available(start_year=1996)
     season_types = ["Regular Season"] + (["Playoffs"] if include_playoffs else [])
@@ -206,7 +217,7 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
     s = {**DEFAULT_SCORING, **(scoring or {})}
     out = df.copy()
 
-    # Ensure columns
+    # Ensure columns exist
     def ensure(col, default=0):
         if col not in out.columns:
             out[col] = default
@@ -375,7 +386,7 @@ if page == "Setup":
 
         seasons_all = all_seasons_available(start_year=1996)
         # Choose starting season for analysis (filter applied after download)
-        start_idx = 0  # default earliest
+        start_idx = 0  # earliest by default
         if st.session_state["analysis_start_season"] in seasons_all:
             start_idx = seasons_all.index(st.session_state["analysis_start_season"])
 
@@ -440,7 +451,7 @@ elif page == "Records":
     df = raw.loc[raw["_SEASON_START_YEAR"] >= start_year_filter].copy()
     df.drop(columns=["_SEASON_START_YEAR"], inplace=True)
 
-    # Compute fantasy points (cached per scoring settings + season window)
+    # Compute fantasy points (cached per scoring settings + window)
     @st.cache_data(show_spinner=False)
     def compute_fp_cached(df_in: pd.DataFrame, scoring_key: str, window_key: str) -> pd.DataFrame:
         return compute_fantasy_points(df_in, scoring)
@@ -585,7 +596,7 @@ elif page == "Records":
                 .copy()
         )
 
-        # Ensure helper columns (idempotent, no insert)
+        # Idempotent helper columns (avoid .insert)
         game_top["Team"] = game_top["TEAM_ABBREVIATION"]
         game_top["Opponent"] = game_top.get("OPPONENT_ABBREVIATION", "")
         game_top["Season"] = game_top["SEASON"]
