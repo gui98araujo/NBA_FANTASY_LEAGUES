@@ -12,6 +12,7 @@ import streamlit as st
 import openai
 
 from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo
+
 # =========================
 # Page Config + Light Theme (white bg, black text)
 # =========================
@@ -296,7 +297,7 @@ if st.sidebar.button("Refresh data (clear cache)"):
     st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
 # =========================
-# Setup Page (no inputs for date range; always 2020-21+ Regular)
+# Setup Page (2020-21+ Regular only)
 # =========================
 if page == "Setup":
     st.title("⚙️ Setup")
@@ -517,7 +518,7 @@ elif page == "Records":
         render_table(out.drop(columns=["PLAYER_ID"]))
 
 # =========================
-# Player Insights Page (with "Generate Insights" button)
+# Player Insights Page (with "Generate Insights" button) – optimized to avoid long API loops
 # =========================
 elif page == "Player Insights":
     st.title("📊 Player Insights")
@@ -557,14 +558,13 @@ elif page == "Player Insights":
     sel_player_name = st.selectbox("Player", options=player_display, index=0)
     sel_player_id = name_to_id[sel_player_name]
 
-    # ---- Button to generate insights (only after filters are set)
+    # ---- Button to generate insights
     generate = st.button("Generate Insights")
-
     if not generate:
         st.info("Set the filters above and click **Generate Insights** to view the visuals.")
         st.stop()
 
-    # Headshot + position
+    # Headshot + position (ONLY selected player → fast)
     colA, colB = st.columns([1, 2])
     with colA:
         st.image(player_headshot_url(sel_player_id), width=220)
@@ -585,32 +585,38 @@ elif page == "Player Insights":
     avg_of_weekly_max = weekly_max["max_fp"].mean() if not weekly_max.empty else float("nan")
     avg_fp_season = p_games["fantasy_points"].mean()
 
-    # Ranks: overall and by position (league-wide within the season)
+    # Overall rank (league-wide) by season avg FP – fast
     league_season = df_season.copy()
     per_player = league_season.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
         GP=("GAME_ID","nunique"),
         avg_fp=("fantasy_points","mean")
     )
-    # Attach positions
-    per_player["POSITION"] = per_player["PLAYER_ID"].apply(get_player_position)
-    per_player["POS_PRIMARY"] = per_player["POSITION"].apply(primary_position_letter)
-
     per_player_sorted = per_player.sort_values("avg_fp", ascending=False).reset_index(drop=True)
     overall_rank = (per_player_sorted.index[per_player_sorted["PLAYER_ID"] == sel_player_id][0] + 1) if sel_player_id in per_player_sorted["PLAYER_ID"].values else None
     overall_count = len(per_player_sorted)
 
+    # Team position rank (to avoid throttling: restrict to team-mates with same primary letter)
     player_primary_pos = primary_position_letter(pos_str)
-    in_pos = per_player_sorted[per_player_sorted["POS_PRIMARY"] == player_primary_pos].copy()
-    if not in_pos.empty and sel_player_id in in_pos["PLAYER_ID"].values:
-        in_pos = in_pos.sort_values("avg_fp", ascending=False).reset_index(drop=True)
-        pos_rank = in_pos.index[in_pos["PLAYER_ID"] == sel_player_id][0] + 1
-        pos_count = len(in_pos)
+    # Get teammates avg_fp
+    team_per_player = df_season_team.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
+        GP=("GAME_ID","nunique"),
+        avg_fp=("fantasy_points","mean")
+    )
+    # Fetch positions ONLY for teammates (small set) – cached per player_id
+    team_per_player["POSITION"] = team_per_player["PLAYER_ID"].apply(get_player_position)
+    team_per_player["POS_PRIMARY"] = team_per_player["POSITION"].apply(primary_position_letter)
+    same_pos_team = team_per_player[team_per_player["POS_PRIMARY"] == player_primary_pos].copy()
+    same_pos_team = same_pos_team.sort_values("avg_fp", ascending=False).reset_index(drop=True)
+    if not same_pos_team.empty and sel_player_id in same_pos_team["PLAYER_ID"].values:
+        team_pos_rank = same_pos_team.index[same_pos_team["PLAYER_ID"] == sel_player_id][0] + 1
+        team_pos_count = len(same_pos_team)
+        team_pos_label = f"#{team_pos_rank} of {team_pos_count} (team)"
     else:
-        pos_rank, pos_count = None, None
+        team_pos_label = "N/A"
 
     with colB:
-        st.markdown(f"**Overall rank (season):** {f'#{overall_rank} of {overall_count}' if overall_rank else 'N/A'}")
-        st.markdown(f"**Position rank ({player_primary_pos or 'N/A'}):** {f'#{pos_rank} of {pos_count}' if pos_rank else 'N/A'}")
+        st.markdown(f"**Overall rank (season, league-wide):** {f'#{overall_rank} of {overall_count}' if overall_rank else 'N/A'}")
+        st.markdown(f"**Position rank (team, {player_primary_pos or 'N/A'}):** {team_pos_label}")
         st.markdown(f"**Average fantasy points (season):** {avg_fp_season:.2f}")
         if not np.isnan(avg_of_weekly_max):
             st.markdown(f"**Average of weekly max:** {avg_of_weekly_max:.2f}")
