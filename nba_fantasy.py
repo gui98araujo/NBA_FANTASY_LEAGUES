@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import openai
 
-from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo
+from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo, commonteamroster
 
 # =========================
 # Page Config + Light Theme (white bg, black text)
@@ -24,12 +24,24 @@ st.markdown(
     h1,h2,h3,h4,h5,h6,label,p,span,div,code { color: #000000 !important; }
     .stButton>button, .stDownloadButton>button {
         background-color: #0057FF !important; color: #FFFFFF !important; border: 0; border-radius: 6px;
+        padding: 0.5rem 1rem; font-weight: 600;
     }
     .stButton>button:hover, .stDownloadButton>button:hover { background-color: #0043C6 !important; }
     section[data-testid="stSidebar"] { background-color: #F7F9FC !important; color: #000000 !important; }
     .stDataFrame table, .stDataFrame thead tr th, .stDataFrame tbody tr td {
         color: #000000 !important; background-color: #FFFFFF !important;
     }
+    /* KPI cards */
+    .kpi-card {
+        border: 1px solid #e6e8eb; border-radius: 10px; padding: 14px 16px; background: #fff;
+        box-shadow: 0 1px 3px rgba(16,24,40,0.06);
+    }
+    .kpi-title { font-size: 0.9rem; color: #475467; margin-bottom: 6px; }
+    .kpi-value { font-size: 1.6rem; font-weight: 700; color: #101828; }
+    .kpi-sub { font-size: 0.85rem; color: #667085; }
+    /* Colored legend bullets */
+    .legend-bullet { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle;}
+    .legend { font-size: 0.95rem; font-weight: 600; color:#101828; }
     </style>
     """,
     unsafe_allow_html=True
@@ -71,7 +83,7 @@ def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     return team, opp, is_home
 
 # =========================
-# Data Fetch (cached per season) — Regular Season only
+# Data Fetch (cached per season) — Regular Season only (2020+)
 # =========================
 @st.cache_data(show_spinner=False, persist=True)
 def fetch_one_season_regular(season_label: str, timeout_s: int = 10) -> pd.DataFrame:
@@ -143,6 +155,8 @@ def load_regular_2020_to_current(
 
 def clear_all_caches():
     fetch_one_season_regular.clear()
+    season_positions_map.clear()
+    get_player_position.cache_clear() if hasattr(get_player_position, "cache_clear") else None
 
 # =========================
 # Fantasy Scoring (full rules)
@@ -260,7 +274,7 @@ def teams_from_df(df: pd.DataFrame) -> List[str]:
 
 @st.cache_data(show_spinner=False, persist=True)
 def get_player_position(player_id: int) -> str:
-    """Fetch primary position via commonplayerinfo; returns e.g. 'G', 'F', 'C', 'F-C'."""
+    """Fallback: fetch primary position via CommonPlayerInfo (one player)."""
     try:
         info = commonplayerinfo.CommonPlayerInfo(player_id=int(player_id))
         df = info.get_data_frames()[0]
@@ -275,6 +289,30 @@ def primary_position_letter(position: str) -> str:
         return ""
     return position.strip().upper()[0]  # first letter (G/F/C)
 
+@st.cache_data(show_spinner=False, persist=True)
+def season_positions_map(season_label: str, team_ids: Tuple[int, ...]) -> pd.DataFrame:
+    """
+    Build PLAYER_ID -> POSITION map for a season using CommonTeamRoster
+    (far fewer calls than per-player CommonPlayerInfo).
+    """
+    rows = []
+    for tid in team_ids:
+        try:
+            roster = commonteamroster.CommonTeamRoster(season=season_label, team_id=int(tid))
+            rdf = roster.get_data_frames()[0]
+            # Expect columns: PLAYER_ID, PLAYER, POSITION, etc.
+            rows.append(rdf[["PLAYER_ID", "POSITION"]])
+        except Exception:
+            continue
+        time.sleep(0.2)  # light throttle
+    if rows:
+        pos_df = pd.concat(rows, ignore_index=True).drop_duplicates("PLAYER_ID")
+    else:
+        pos_df = pd.DataFrame(columns=["PLAYER_ID", "POSITION"])
+    # Fill missing via fallback (rare)
+    pos_df["PLAYER_ID"] = pos_df["PLAYER_ID"].astype("Int64")
+    return pos_df
+
 # =========================
 # Session Defaults
 # =========================
@@ -288,7 +326,7 @@ if "started" not in st.session_state:
 # =========================
 # Sidebar & Navigation
 # =========================
-page = st.sidebar.radio("Navigate", ["Setup", "Records", "Player Insights", "Chat"], index=0)
+page = st.sidebar.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
 st.sidebar.write("---")
 if st.sidebar.button("Refresh data (clear cache)"):
     clear_all_caches()
@@ -518,7 +556,7 @@ elif page == "Records":
         render_table(out.drop(columns=["PLAYER_ID"]))
 
 # =========================
-# Player Insights Page (with "Generate Insights" button) – optimized to avoid long API loops
+# Player Insights Page (Generate Insights button) – league-wide position rank
 # =========================
 elif page == "Player Insights":
     st.title("📊 Player Insights")
@@ -564,12 +602,21 @@ elif page == "Player Insights":
         st.info("Set the filters above and click **Generate Insights** to view the visuals.")
         st.stop()
 
-    # Headshot + position (ONLY selected player → fast)
-    colA, colB = st.columns([1, 2])
+    # Build season-wide positions via team rosters (fast)
+    season_team_ids = tuple(sorted(df_season["TEAM_ID"].dropna().astype(int).unique().tolist()))
+    pos_map_df = season_positions_map(sel_season, season_team_ids)
+    # Fallback for selected player if missing
+    if pos_map_df.empty or sel_player_id not in pos_map_df["PLAYER_ID"].astype(int).tolist():
+        fallback_pos = get_player_position(sel_player_id)
+        pos_map_df = pd.concat([pos_map_df, pd.DataFrame([{"PLAYER_ID": sel_player_id, "POSITION": fallback_pos}])], ignore_index=True)
+
+    # Headshot + position + KPIs
+    colA, colB = st.columns([1, 3])
     with colA:
         st.image(player_headshot_url(sel_player_id), width=220)
-        pos_str = get_player_position(sel_player_id)
-        st.write(f"**Position:** {pos_str if pos_str else 'N/A'}")
+        pos_row = pos_map_df[pos_map_df["PLAYER_ID"].astype(int) == int(sel_player_id)]
+        pos_str = (pos_row["POSITION"].iloc[0] if not pos_row.empty else "") or "N/A"
+        st.write(f"**Position:** {pos_str}")
 
     # Player games for selection
     p_games = df_season_team[df_season_team["PLAYER_ID"] == sel_player_id].copy()
@@ -582,64 +629,100 @@ elif page == "Player Insights":
     p_games["WEEK"] = ((p_games["GAME_DATE"] - season_start_date).dt.days // 7 + 1).astype(int)
     weekly_avg = p_games.groupby("WEEK", as_index=False).agg(avg_fp=("fantasy_points","mean"))
     weekly_max = p_games.groupby("WEEK", as_index=False).agg(max_fp=("fantasy_points","max"))
-    avg_of_weekly_max = weekly_max["max_fp"].mean() if not weekly_max.empty else float("nan")
     avg_fp_season = p_games["fantasy_points"].mean()
+    avg_weekly_max = weekly_max["max_fp"].mean() if not weekly_max.empty else float("nan")
 
-    # Overall rank (league-wide) by season avg FP – fast
-    league_season = df_season.copy()
-    per_player = league_season.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
+    # League-wide overall & position ranks (by avg_fp in season)
+    per_player = df_season.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
         GP=("GAME_ID","nunique"),
         avg_fp=("fantasy_points","mean")
     )
-    per_player_sorted = per_player.sort_values("avg_fp", ascending=False).reset_index(drop=True)
-    overall_rank = (per_player_sorted.index[per_player_sorted["PLAYER_ID"] == sel_player_id][0] + 1) if sel_player_id in per_player_sorted["PLAYER_ID"].values else None
-    overall_count = len(per_player_sorted)
+    # Attach positions from map
+    per_player = per_player.merge(pos_map_df, on="PLAYER_ID", how="left")
+    per_player["POS_PRIMARY"] = per_player["POSITION"].fillna("").apply(primary_position_letter)
 
-    # Team position rank (to avoid throttling: restrict to team-mates with same primary letter)
-    player_primary_pos = primary_position_letter(pos_str)
-    # Get teammates avg_fp
-    team_per_player = df_season_team.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
-        GP=("GAME_ID","nunique"),
-        avg_fp=("fantasy_points","mean")
-    )
-    # Fetch positions ONLY for teammates (small set) – cached per player_id
-    team_per_player["POSITION"] = team_per_player["PLAYER_ID"].apply(get_player_position)
-    team_per_player["POS_PRIMARY"] = team_per_player["POSITION"].apply(primary_position_letter)
-    same_pos_team = team_per_player[team_per_player["POS_PRIMARY"] == player_primary_pos].copy()
-    same_pos_team = same_pos_team.sort_values("avg_fp", ascending=False).reset_index(drop=True)
-    if not same_pos_team.empty and sel_player_id in same_pos_team["PLAYER_ID"].values:
-        team_pos_rank = same_pos_team.index[same_pos_team["PLAYER_ID"] == sel_player_id][0] + 1
-        team_pos_count = len(same_pos_team)
-        team_pos_label = f"#{team_pos_rank} of {team_pos_count} (team)"
+    # Overall rank
+    league_sorted = per_player.sort_values("avg_fp", ascending=False).reset_index(drop=True)
+    overall_rank = (league_sorted.index[league_sorted["PLAYER_ID"] == sel_player_id][0] + 1) if sel_player_id in league_sorted["PLAYER_ID"].values else None
+    overall_count = len(league_sorted)
+
+    # League-wide position rank (G/F/C bucket)
+    p_primary = primary_position_letter(pos_str if pos_str != "N/A" else "")
+    in_pos = per_player[per_player["POS_PRIMARY"] == p_primary].sort_values("avg_fp", ascending=False).reset_index(drop=True)
+    if not in_pos.empty and sel_player_id in in_pos["PLAYER_ID"].values:
+        pos_rank = in_pos.index[in_pos["PLAYER_ID"] == sel_player_id][0] + 1
+        pos_count = len(in_pos)
     else:
-        team_pos_label = "N/A"
+        pos_rank, pos_count = None, None
 
     with colB:
-        st.markdown(f"**Overall rank (season, league-wide):** {f'#{overall_rank} of {overall_count}' if overall_rank else 'N/A'}")
-        st.markdown(f"**Position rank (team, {player_primary_pos or 'N/A'}):** {team_pos_label}")
-        st.markdown(f"**Average fantasy points (season):** {avg_fp_season:.2f}")
-        if not np.isnan(avg_of_weekly_max):
-            st.markdown(f"**Average of weekly max:** {avg_of_weekly_max:.2f}")
-        else:
-            st.markdown("**Average of weekly max:** N/A")
+        # KPI cards (4 lado a lado)
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(f"""
+                <div class="kpi-card">
+                  <div class="kpi-title">Overall Rank</div>
+                  <div class="kpi-value">{('#'+str(overall_rank)) if overall_rank else 'N/A'}</div>
+                  <div class="kpi-sub">out of {overall_count}</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"""
+                <div class="kpi-card">
+                  <div class="kpi-title">Position Rank ({p_primary or 'N/A'})</div>
+                  <div class="kpi-value">{('#'+str(pos_rank)) if pos_rank else 'N/A'}</div>
+                  <div class="kpi-sub">league-wide, out of {pos_count if pos_count else '—'}</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with k3:
+            st.markdown(f"""
+                <div class="kpi-card">
+                  <div class="kpi-title">Avg FPTS (season)</div>
+                  <div class="kpi-value">{avg_fp_season:.2f}</div>
+                  <div class="kpi-sub">per game</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"""
+                <div class="kpi-card">
+                  <div class="kpi-title">Avg Weekly Max</div>
+                  <div class="kpi-value">{(0.0 if np.isnan(avg_weekly_max) else float(avg_weekly_max)):.2f}</div>
+                  <div class="kpi-sub">mean of weekly best game</div>
+                </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("---")
     st.subheader("Weekly Trend")
+
+    # Two-line chart: weekly average (blue) and weekly max (red) + visual legend
     try:
         import altair as alt
-        # Line for weekly average
-        base = alt.Chart(weekly_avg).mark_line(point=True, color="#1A73E8").encode(
+        chart1 = alt.Chart(weekly_avg).mark_line(point=True, color="#1A73E8").encode(
             x=alt.X("WEEK:O", title="Week"),
-            y=alt.Y("avg_fp:Q", title="Weekly average fantasy points"),
-            tooltip=[alt.Tooltip("WEEK:O"), alt.Tooltip("avg_fp:Q", format=".2f")]
+            y=alt.Y("avg_fp:Q", title="Fantasy Points"),
+            tooltip=[alt.Tooltip("WEEK:O"), alt.Tooltip("avg_fp:Q", format=".2f", title="Weekly average")]
         )
-        # Horizontal rule for average of weekly max
-        hrule = alt.Chart(pd.DataFrame({"y": [avg_of_weekly_max]})).mark_rule(color="red").encode(y="y:Q")
-        st.altair_chart(base + hrule, use_container_width=True)
-        st.caption("Blue line: weekly average. Red line: average of weekly maximum scores.")
+        chart2 = alt.Chart(weekly_max).mark_line(point=True, color="#D93025").encode(
+            x=alt.X("WEEK:O"),
+            y=alt.Y("max_fp:Q"),
+            tooltip=[alt.Tooltip("WEEK:O"), alt.Tooltip("max_fp:Q", format=".2f", title="Weekly max")]
+        )
+        st.altair_chart(chart1 + chart2, use_container_width=True)
+
+        st.markdown(
+            """
+            <div class="legend">
+              <span class="legend-bullet" style="background:#1A73E8"></span>Weekly average
+              &nbsp;&nbsp;&nbsp;&nbsp;
+              <span class="legend-bullet" style="background:#D93025"></span>Weekly max
+            </div>
+            """, unsafe_allow_html=True
+        )
     except Exception:
-        st.line_chart(weekly_avg.set_index("WEEK")["avg_fp"])
-        st.info(f"Average of weekly max (red line): {avg_of_weekly_max:.2f}")
+        # Fallback simple chart
+        merged = weekly_avg.merge(weekly_max, on="WEEK", how="outer").sort_values("WEEK")
+        merged = merged.set_index("WEEK")
+        st.line_chart(merged.rename(columns={"avg_fp":"Weekly average", "max_fp":"Weekly max"}))
 
     st.markdown("---")
     st.subheader("Teammate Impact (with vs without)")
@@ -671,6 +754,127 @@ elif page == "Player Insights":
     for c in ["With","Without"]:
         show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
     st.dataframe(show_df, use_container_width=True)
+
+# =========================
+# League Insights Page (season filter only here)
+# =========================
+elif page == "League Insights":
+    st.title("📈 League Insights")
+    st.caption("Season-wide position analysis and distributions (Regular Season, 2020‑present).")
+
+    if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
+        st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
+        st.stop()
+
+    raw = st.session_state["raw_df"].copy()
+    scoring = st.session_state["scoring"]
+
+    @st.cache_data(show_spinner=False)
+    def compute_fp_cached(df_in: pd.DataFrame, scoring_key: str) -> pd.DataFrame:
+        return compute_fantasy_points(df_in, scoring)
+
+    scoring_key = str(sorted([(k, scoring[k]) for k in scoring.keys()]))
+    df = compute_fp_cached(raw, scoring_key)
+
+    # Season filter (only here)
+    seasons = sorted(df["SEASON"].dropna().unique().tolist())
+    sel_season = st.selectbox("Season", options=seasons, index=len(seasons)-1)
+    df_s = df[df["SEASON"] == sel_season].copy()
+
+    # Build season-wide positions via team rosters (fast)
+    season_team_ids = tuple(sorted(df_s["TEAM_ID"].dropna().astype(int).unique().tolist()))
+    pos_map_df = season_positions_map(sel_season, season_team_ids)
+    df_s = df_s.merge(pos_map_df, on="PLAYER_ID", how="left")
+    # Fallback letter (if any missing)
+    df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
+    df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
+
+    st.markdown("### Position boxplot (FPTS by position)")
+    try:
+        import altair as alt
+        bp = alt.Chart(df_s).mark_boxplot(outliers=True).encode(
+            x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
+            y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
+            color=alt.Color("POS_PRIMARY:N", legend=None)
+        )
+        st.altair_chart(bp, use_container_width=True)
+    except Exception:
+        st.write("Altair not available, showing simple table sample:")
+        st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
+
+    st.markdown("---")
+    st.markdown("### What stats contribute most to FPTS? (season average per game)")
+
+    # Build per-row contributions (base categories only, bonuses excluded)
+    s = st.session_state["scoring"]
+    d = df_s.fillna(0).copy()
+    contrib = pd.DataFrame({
+        "PTS": s["points"] * d["PTS"],
+        "AST": s["assist"] * d["AST"],
+        "STL": s["steal"] * d["STL"],
+        "BLK": s["block"] * d["BLK"],
+        "TOV": s["turnover"] * d["TOV"],        # negative weight expected
+        "FT Missed": s["ft_missed"] * (d["FTA"] - d["FTM"]).clip(lower=0),
+        "3PM": s["three_made"] * d["FG3M"],
+        "3PMissed": s["three_missed"] * (d["FG3A"] - d["FG3M"]).clip(lower=0),
+        "OREB": s["oreb"] * d["OREB"],
+        "DREB": s["dreb"] * d["DREB"],
+    })
+    avg_contrib = contrib.mean().sort_values(ascending=False).reset_index()
+    avg_contrib.columns = ["Stat", "Avg FPTS contribution"]
+
+    try:
+        import altair as alt
+        bars = alt.Chart(avg_contrib).mark_bar().encode(
+            x=alt.X("Avg FPTS contribution:Q", title="Avg FPTS contribution per game"),
+            y=alt.Y("Stat:N", sort="-x"),
+            color=alt.condition(alt.datum["Avg FPTS contribution"] > 0, alt.value("#1A73E8"), alt.value("#D93025")),
+            tooltip=[alt.Tooltip("Stat:N"), alt.Tooltip("Avg FPTS contribution:Q", format=".2f")]
+        )
+        st.altair_chart(bars, use_container_width=True)
+    except Exception:
+        st.dataframe(avg_contrib)
+
+    st.markdown("---")
+    st.markdown("### Position distribution in Top brackets")
+
+    # Rank players by avg fpts (season), then count POS_PRIMARY in ranges
+    per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
+        avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")
+    ).sort_values("avg_fp", ascending=False).reset_index(drop=True)
+
+    def count_pos_in_range(dfpp, start, end):
+        sl = dfpp.iloc[start:end]
+        return sl["POS_PRIMARY"].value_counts().rename(f"{start+1}-{end}")
+
+    top50 = count_pos_in_range(per_player, 0, 50)
+    top50_100 = count_pos_in_range(per_player, 50, 100)
+    top100_150 = count_pos_in_range(per_player, 100, 150)
+    dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
+    dist = dist.reindex(["G","F","C","U"]).fillna(0).astype(int)
+
+    st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
+
+    # Buckets
+    bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
+    labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
+
+    # Build counts per player (top 50 by avg_fp)
+    top50_players = per_player.head(50)["PLAYER_ID"].tolist()
+    df_top = df_s[df_s["PLAYER_ID"].isin(top50_players)].copy()
+    df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
+
+    counts = (df_top.groupby(["PLAYER_ID","PLAYER_NAME","bucket"])
+                    .size().unstack(fill_value=0).reindex(columns=labels, fill_value=0))
+    counts = counts.loc[per_player.head(50)["PLAYER_ID"]]  # keep sorted by avg_fp
+    counts.insert(0, "PLAYER_NAME", per_player.set_index("PLAYER_ID").loc[counts.index, "PLAYER_NAME"].values)
+
+    # Heatmap styling
+    styled = counts.style.background_gradient(axis=0, cmap="YlOrRd", subset=labels).format(na_rep="0")
+    st.dataframe(styled, use_container_width=True)
 
 # =========================
 # Chat Page (GPT‑3.5)
