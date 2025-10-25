@@ -1,6 +1,5 @@
 # app.py
 # -*- coding: utf-8 -*-
-import os
 import time
 import random
 from datetime import datetime
@@ -10,35 +9,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+import openai
 from nba_api.stats.endpoints import leaguegamelog
 
-# =============== Page Config + Light Theme (white bg, black text) ===============
-st.set_page_config(page_title="Fantasy NBA Records", page_icon="🏀", layout="wide")
+# =========================
+# Page Config + Light Theme (white bg, black text)
+# =========================
+st.set_page_config(page_title="Fantasy NBA App", page_icon="🏀", layout="wide")
 st.markdown(
     """
     <style>
-    :root { --primary-color: #0057FF; }
     .stApp { background-color: #FFFFFF; color: #000000; }
-    .block-container, .stDataFrame, .stMarkdown, .stText, .stSelectbox, .stNumberInput, .stCheckbox, .stRadio {
-        color: #000000 !important; background-color: #FFFFFF !important;
-    }
-    label, .stSelectbox label, .stNumberInput label, .stCheckbox label, .stTextInput label, .stRadio label {
-        color: #000000 !important;
-    }
-    h1, h2, h3, h4, h5, h6, p, span, div, code, .markdown-text-container {
-        color: #000000 !important;
-    }
+    h1,h2,h3,h4,h5,h6,label,p,span,div,code { color: #000000 !important; }
     .stButton>button, .stDownloadButton>button {
-        background-color: #0057FF !important; color: #FFFFFF !important;
-        border: 0; border-radius: 6px;
+        background-color: #0057FF !important; color: #FFFFFF !important; border: 0; border-radius: 6px;
     }
     .stButton>button:hover, .stDownloadButton>button:hover { background-color: #0043C6 !important; }
-    .stDataFrame table, .stDataFrame thead tr th, .stDataFrame tbody tr td {
-        color: #000000 !important; background-color: #FFFFFF !important;
-    }
     section[data-testid="stSidebar"] { background-color: #F7F9FC !important; color: #000000 !important; }
-    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {
+    .stDataFrame table, .stDataFrame thead tr th, .stDataFrame tbody tr td {
         color: #000000 !important; background-color: #FFFFFF !important;
     }
     </style>
@@ -46,8 +34,11 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ========================= Helpers: Seasons =========================
+# =========================
+# Helpers: Seasons
+# =========================
 def season_label_from_start_year(start_year: int) -> str:
+    """2005 -> '2005-06'"""
     return f"{start_year}-{str((start_year + 1) % 100).zfill(2)}"
 
 def infer_current_season_label(today: Optional[datetime] = None) -> str:
@@ -56,6 +47,9 @@ def infer_current_season_label(today: Optional[datetime] = None) -> str:
     return season_label_from_start_year(start_year)
 
 def all_seasons_available(start_year: int = 1996, end_season: Optional[str] = None) -> List[str]:
+    """
+    LeagueGameLog é estável a partir de ~1996-97. Construímos a lista até a temporada corrente.
+    """
     last = end_season or infer_current_season_label()
     last_start_year = int(last[:4])
     return [season_label_from_start_year(y) for y in range(start_year, last_start_year + 1)]
@@ -68,6 +62,9 @@ def seasons_from(start_season_label: str, earliest: int = 1996) -> List[str]:
     return all_ssn[start_idx:]
 
 def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
+    """
+    'DEN vs LAL' (home) ou 'DEN @ LAL' (away) -> (team, opp, is_home)
+    """
     parts = str(matchup).split()
     if len(parts) != 3:
         return ("", "", False)
@@ -75,7 +72,9 @@ def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     is_home = (sep.lower() == "vs")
     return team, opp, is_home
 
-# ========================= Data Fetch (cached per season/type) =========================
+# =========================
+# Data Fetch (cache por temporada/tipo, com timeout e retries dentro de nba_api)
+# =========================
 VALID_SEASON_TYPES = ["Regular Season", "Playoffs"]
 
 @st.cache_data(show_spinner=False, persist=True)
@@ -86,6 +85,11 @@ def fetch_one_season_type(
     retries: int = 2,
     backoff_base: float = 1.25
 ) -> pd.DataFrame:
+    """
+    Baixa um (season, season_type). Cacheada por parâmetros.
+    Faz várias tentativas com backoff simples.
+    """
+    assert season_type in VALID_SEASON_TYPES
     last_err = None
     for attempt in range(1, retries + 2):
         try:
@@ -98,18 +102,22 @@ def fetch_one_season_type(
             df = r.get_data_frames()[0].copy()
             df["SEASON"] = season_label
             df["SEASON_TYPE"] = season_type
+
             if "GAME_DATE" in df.columns:
                 df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+
             if "MATCHUP" in df.columns:
                 parsed = df["MATCHUP"].apply(parse_opponent_from_matchup)
                 df["TEAM_ABBREV_FROM_MATCHUP"] = parsed.apply(lambda x: x[0])
                 df["OPPONENT_ABBREVIATION"] = parsed.apply(lambda x: x[1])
                 df["IS_HOME"] = parsed.apply(lambda x: x[2])
+
             return df
         except Exception as e:
             last_err = e
             sleep_s = (backoff_base ** attempt) + random.uniform(0, 0.5)
             time.sleep(sleep_s)
+    # Falhou de vez -> retornamos vazio (o orquestrador reporta)
     return pd.DataFrame()
 
 def load_range_player_game_logs(
@@ -120,12 +128,15 @@ def load_range_player_game_logs(
     retries: int = 2,
     backoff_base: float = 1.25,
 ) -> Tuple[pd.DataFrame, List[Tuple[str, str, str]]]:
+    """
+    Orquestra o download (paralelo) de várias temporadas.
+    Retorna (dataframe, lista_de_falhas[(season, type, status)]).
+    """
     season_types = ["Regular Season"] + (["Playoffs"] if include_playoffs else [])
     tasks = [(s, t) for s in seasons for t in season_types]
     total = len(tasks)
-
     progress = st.progress(0, text=f"Loading data... (0/{total})")
-    status = st.empty()
+    status_box = st.empty()
 
     parts: List[pd.DataFrame] = []
     failures: List[Tuple[str, str, str]] = []
@@ -151,9 +162,9 @@ def load_range_player_game_logs(
 
     progress.empty()
     if failures:
-        status.warning(f"Finished with {len(failures)} failure(s). See the report below.")
+        status_box.warning(f"Finished with {len(failures)} failure(s). Scroll for details.")
     else:
-        status.success("All requested seasons loaded successfully.")
+        status_box.success("All requested seasons loaded successfully.")
 
     if parts:
         big = pd.concat(parts, ignore_index=True)
@@ -168,15 +179,35 @@ def load_range_player_game_logs(
 def clear_all_caches():
     fetch_one_season_type.clear()
 
-# ========================= Fantasy Scoring =========================
+# =========================
+# Fantasy Scoring (completo, conforme regras)
+# =========================
 DEFAULT_SCORING: Dict[str, float | bool] = {
-    "points": 0.7, "assist": 1.1, "steal": 2.2, "block": 2.0, "turnover": -1.0,
-    "ft_missed": -0.1, "three_made": 0.7, "three_missed": -0.2, "oreb": 1.2, "dreb": 0.95,
-    "tech_foul": -1.0, "flagrant_foul": -2.0,
-    "double_double": 2.0, "triple_double": 3.0, "bonus_40": 2.0, "bonus_50": 2.0,
-    "bonus_15_ast": 2.0, "bonus_20_reb": 2.0,
-    "stack_dd_td": True, "stack_40_50": True,
+    # event weights
+    "points": 0.7,
+    "assist": 1.1,
+    "steal": 2.2,
+    "block": 2.0,
+    "turnover": -1.0,
+    "ft_missed": -0.1,
+    "three_made": 0.7,
+    "three_missed": -0.2,
+    "oreb": 1.2,
+    "dreb": 0.95,
+    "tech_foul": -1.0,
+    "flagrant_foul": -2.0,
+    # bonuses
+    "double_double": 2.0,
+    "triple_double": 3.0,
+    "bonus_40": 2.0,
+    "bonus_50": 2.0,
+    "bonus_15_ast": 2.0,
+    "bonus_20_reb": 2.0,
+    # stacking behavior
+    "stack_dd_td": True,   # DD (+2) + TD (+3) acumulam se True; se False, TD substitui DD
+    "stack_40_50": True,   # 50+ acumula com 40+ se True; senão, 50+ substitui 40+
 }
+
 TECH_CANDIDATES = ["TECH", "TECH_FOULS", "TECHNICALS", "TECHNICAL_FOUL", "TF"]
 FLAGRANT_CANDIDATES = ["FLAGRANT", "FLAGRANT_FOULS", "FLAGRANT1", "FLAGRANT2", "FF"]
 
@@ -184,6 +215,7 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
     s = {**DEFAULT_SCORING, **(scoring or {})}
     out = df.copy()
 
+    # Ensure cols
     def ensure(col, default=0):
         if col not in out.columns:
             out[col] = default
@@ -202,9 +234,11 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
         out["__FLAG__"] = 0
         flag_col = "__FLAG__"
 
+    # Misses
     out["_ft_missed"] = (out["FTA"].fillna(0) - out["FTM"].fillna(0)).clip(lower=0)
     out["_fg3_missed"] = (out["FG3A"].fillna(0) - out["FG3M"].fillna(0)).clip(lower=0)
 
+    # Bonuses
     if s.get("stack_40_50", True):
         out["_b40"] = np.where(out["PTS"] >= 40, s["bonus_40"], 0.0)
         out["_b50"] = np.where(out["PTS"] >= 50, s["bonus_50"], 0.0)
@@ -215,7 +249,14 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
     out["_b15_ast"] = np.where(out["AST"] >= 15, s["bonus_15_ast"], 0.0)
     out["_b20_reb"] = np.where(out["REB"] >= 20, s["bonus_20_reb"], 0.0)
 
-    cats = [out["PTS"].fillna(0), out["REB"].fillna(0), out["AST"].fillna(0), out["STL"].fillna(0), out["BLK"].fillna(0)]
+    # Double / Triple double
+    cats = [
+        out["PTS"].fillna(0),
+        out["REB"].fillna(0),
+        out["AST"].fillna(0),
+        out["STL"].fillna(0),
+        out["BLK"].fillna(0),
+    ]
     dd_count = sum(cat >= 10 for cat in cats)
     out["_is_dd"] = (dd_count >= 2).astype(int)
     out["_is_td"] = (dd_count >= 3).astype(int)
@@ -242,17 +283,18 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
     )
     out["fantasy_points"] = fp.astype(float)
 
+    # Cleanup aux
     for c in ["_ft_missed","_fg3_missed","_b40","_b50","_b15_ast","_b20_reb","_is_dd","_is_td","_dd_points","__TECH__","__FLAG__"]:
         if c in out.columns:
             out.drop(columns=[c], inplace=True)
     return out
 
-# ========================= Player Headshots =========================
+# =========================
+# Images
+# =========================
 def player_headshot_url(player_id: int) -> str:
-    pid = int(player_id)
-    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{int(player_id)}.png"
 
-# ========================= Records helpers =========================
 def teams_from_df(df: pd.DataFrame) -> List[str]:
     cols = [c for c in ["TEAM_ABBREVIATION", "TEAM_ABBREV_FROM_MATCHUP"] if c in df.columns]
     if not cols:
@@ -262,7 +304,9 @@ def teams_from_df(df: pd.DataFrame) -> List[str]:
         vals.update(df[c].dropna().astype(str).unique().tolist())
     return sorted([v for v in vals if v and v != "nan"])
 
-# ========================= Session defaults =========================
+# =========================
+# Session Defaults
+# =========================
 if "scoring" not in st.session_state:
     st.session_state["scoring"] = DEFAULT_SCORING.copy()
 if "include_playoffs" not in st.session_state:
@@ -273,24 +317,28 @@ if "raw_df" not in st.session_state:
     st.session_state["raw_df"] = pd.DataFrame()
 if "started" not in st.session_state:
     st.session_state["started"] = False
-if "chat_history" not in st.session_state:
-    st.session_state["chat_history"] = []  # [{'role':'user'|'assistant', 'content':str}, ...]
 
-# ========================= Sidebar Nav =========================
-page = st.sidebar.radio("Navigate", ["Setup", "Records", "Chat"], index=0, help="Switch between pages")
+# =========================
+# Sidebar & Navigation
+# =========================
+page = st.sidebar.radio("Navigate", ["Setup", "Records", "Chat"], index=0)
+
 st.sidebar.write("---")
 if st.sidebar.button("Refresh data (clear cache)"):
     clear_all_caches()
     st.session_state["raw_df"] = pd.DataFrame()
     st.session_state["started"] = False
     st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
-st.sidebar.info("Tip: Quick mode is much faster. Full mode may take several minutes on first run.")
 
-# ========================= Setup Page =========================
+st.sidebar.info("Quick mode downloads only from your analysis start season. Full mode downloads everything.")
+
+# =========================
+# Setup Page
+# =========================
 if page == "Setup":
     st.title("⚙️ Setup")
     st.caption("Set your League Scoring Settings and analysis start. Click **Let's Start** to download data and begin.")
-    st.info("**Quick mode** downloads only from your analysis start season. **Full mode** downloads everything (first time can take several minutes).")
+    st.info("**Quick Mode** downloads only from your analysis start season. **Full Mode** downloads everything (first time can take several minutes).")
 
     s = st.session_state["scoring"]
 
@@ -332,15 +380,17 @@ if page == "Setup":
 
         seasons_all = all_seasons_available(start_year=1996)
         start_idx = seasons_all.index(st.session_state["analysis_start_season"]) if st.session_state["analysis_start_season"] in seasons_all else 0
-        analysis_start = st.selectbox("Starting season for analysis", seasons_all, index=start_idx,
-                                      help="Quick Mode downloads only from this season onward.")
+        analysis_start = st.selectbox(
+            "Starting season for analysis",
+            seasons_all, index=start_idx,
+            help="Example: 2003-04, 2004-05. Quick mode downloads only from this season onward."
+        )
 
         st.markdown("#### Download Mode & Performance")
-        mode = st.radio("Mode", ["Quick", "Full"], horizontal=True,
-                        help="Quick = from analysis start; Full = all seasons (1996-97 → current).")
+        mode = st.radio("Mode", ["Quick", "Full"], horizontal=True, help="Quick: from start season to current. Full: all seasons (1996-97 → current).")
         col_perf1, col_perf2, col_perf3 = st.columns(3)
         with col_perf1:
-            max_workers = st.slider("Parallel requests", min_value=1, max_value=8, value=6)
+            max_workers = st.slider("Parallel requests", min_value=1, max_value=8, value=6, help="Higher is faster but may hit rate limits.")
         with col_perf2:
             timeout_s = st.number_input("Timeout (seconds)", min_value=5, max_value=60, value=10, step=1)
         with col_perf3:
@@ -358,14 +408,18 @@ if page == "Setup":
     with cstart1:
         start_clicked = st.button("Let's Start")
     with cstart2:
-        st.caption("Downloads player game logs with progress and caching.")
+        if mode == "Quick":
+            st.caption("Quick Mode: downloads only from your analysis start season to the current season.")
+        else:
+            st.caption("Full Mode: downloads all seasons (1996-97 → current). First run may take several minutes.")
 
     if start_clicked:
         st.session_state["include_playoffs"] = include_playoffs
         st.session_state["analysis_start_season"] = analysis_start
 
         seasons = seasons_from(analysis_start, earliest=1996) if mode == "Quick" else all_seasons_available(start_year=1996)
-        st.write(f"Running **load_range_player_game_logs** for {len(seasons)} season(s), Playoffs={include_playoffs}, Mode={mode}.")
+
+        st.write(f"Running **load_range_player_game_logs(...)** for {len(seasons)} season(s), Playoffs={include_playoffs}, Mode={mode}.")
         with st.spinner("Downloading player game logs..."):
             raw, failures = load_range_player_game_logs(
                 seasons=seasons,
@@ -375,8 +429,9 @@ if page == "Setup":
                 retries=retries,
                 backoff_base=1.25,
             )
+
         if raw.empty:
-            st.error("No data could be loaded. Try adjusting parallelism, timeout, or retries.")
+            st.error("No data could be loaded. Try again with fewer parallel requests or higher timeout.")
         else:
             st.session_state["raw_df"] = raw
             st.session_state["started"] = True
@@ -384,26 +439,34 @@ if page == "Setup":
 
         if failures:
             st.warning("Some season/type downloads failed or returned empty. They were skipped.")
-            st.dataframe(pd.DataFrame(failures, columns=["Season", "Season Type", "Error/Status"]), use_container_width=True)
+            fail_df = pd.DataFrame(failures, columns=["Season", "Season Type", "Error/Status"])
+            st.dataframe(fail_df, use_container_width=True)
 
+    # Preview + Export
     if isinstance(st.session_state.get("raw_df"), pd.DataFrame) and not st.session_state["raw_df"].empty:
         st.markdown("#### Sample of Loaded Data")
         st.dataframe(st.session_state["raw_df"].head(20), use_container_width=True)
 
         st.markdown("#### Export")
         raw = st.session_state["raw_df"]
-        st.download_button("Download full dataset (CSV)", data=raw.to_csv(index=False).encode("utf-8"),
-                           file_name="player_game_logs.csv", mime="text/csv")
+        st.download_button(
+            "Download full dataset (CSV)",
+            data=raw.to_csv(index=False).encode("utf-8"),
+            file_name="player_game_logs.csv", mime="text/csv"
+        )
         try:
             import pyarrow as pa  # noqa
-            import pyarrow.parquet as pq  # noqa
             parquet_bytes = raw.to_parquet(index=False)
-            st.download_button("Download full dataset (Parquet)", data=parquet_bytes,
-                               file_name="player_game_logs.parquet", mime="application/octet-stream")
+            st.download_button(
+                "Download full dataset (Parquet)",
+                data=parquet_bytes, file_name="player_game_logs.parquet", mime="application/octet-stream"
+            )
         except Exception:
             st.caption("Install `pyarrow` to enable Parquet export (already listed in requirements).")
 
-# ========================= Records Page =========================
+# =========================
+# Records Page
+# =========================
 elif page == "Records":
     st.title("🏀 Records")
     st.caption("Leaderboards by Season, Career, and Game. Use the filters to customize your view.")
@@ -416,6 +479,7 @@ elif page == "Records":
     scoring = st.session_state["scoring"]
     analysis_start = st.session_state["analysis_start_season"]
 
+    # Filter dataset to analysis start season (UI scope)
     try:
         start_year_filter = int(analysis_start[:4])
     except Exception:
@@ -424,6 +488,7 @@ elif page == "Records":
     df = raw.loc[raw["_SEASON_START_YEAR"] >= start_year_filter].copy()
     df.drop(columns=["_SEASON_START_YEAR"], inplace=True)
 
+    # Compute fantasy points (cached via a composite key)
     @st.cache_data(show_spinner=False)
     def compute_fp_cached(df_in: pd.DataFrame, scoring_key: str, window_key: str) -> pd.DataFrame:
         return compute_fantasy_points(df_in, scoring)
@@ -432,18 +497,27 @@ elif page == "Records":
     window_key = f"{analysis_start}"
     df = compute_fp_cached(df, scoring_key, window_key)
 
+    # Filters
     st.subheader("Filters")
     left, right = st.columns([2, 1])
+
     with left:
         teams = teams_from_df(df)
-        sel_teams = st.multiselect("Select Team(s)", options=teams, default=teams,
-                                   help="Filter by the player's team in that game.")
+        sel_teams = st.multiselect(
+            "Select Team(s)", options=teams, default=teams,
+            help="Filter by the player's team in that game."
+        )
     with right:
         top_n = st.selectbox("Top N", options=[10, 15, 20, 50, 100], index=0)
 
-    df_f = df[df["TEAM_ABBREVIATION"].isin(sel_teams)].copy() if sel_teams and len(sel_teams) < len(teams) else df.copy()
+    if sel_teams and len(sel_teams) < len(teams):
+        df_f = df[df["TEAM_ABBREVIATION"].isin(sel_teams)].copy()
+    else:
+        df_f = df.copy()
+
     st.markdown("---")
 
+    # Tabs
     tab1, tab2, tab3 = st.tabs(["Season Records", "Career Records", "Game Records"])
 
     def add_photo_and_name(dfi: pd.DataFrame) -> pd.DataFrame:
@@ -454,7 +528,9 @@ elif page == "Records":
 
     def render_table(table: pd.DataFrame):
         st.dataframe(
-            table, use_container_width=True, hide_index=True,
+            table,
+            use_container_width=True,
+            hide_index=True,
             column_config={
                 "Rank": st.column_config.NumberColumn("Rank", format="%d", width="small"),
                 "Player": st.column_config.TextColumn("Player", width="medium"),
@@ -467,6 +543,7 @@ elif page == "Records":
             },
         )
 
+    # Season Records
     with tab1:
         st.subheader("Season Records")
         c1, c2 = st.columns(2)
@@ -478,13 +555,17 @@ elif page == "Records":
             sel_seasons = st.multiselect("Season", options=seasons, default=seasons)
 
         tmp = df_f.copy()
-        if sel_season_types: tmp = tmp[tmp["SEASON_TYPE"].isin(sel_season_types)]
-        if sel_seasons: tmp = tmp[tmp["SEASON"].isin(sel_seasons)]
+        if sel_season_types:
+            tmp = tmp[tmp["SEASON_TYPE"].isin(sel_season_types)]
+        if sel_seasons:
+            tmp = tmp[tmp["SEASON"].isin(sel_seasons)]
 
         season_totals = (
             tmp.groupby(["SEASON", "PLAYER_ID", "PLAYER_NAME"], as_index=False)
                .agg(FP=("fantasy_points", "sum"))
         )
+
+        # Primary team in that season by FP
         team_per_season = (
             tmp.groupby(["SEASON","PLAYER_ID","TEAM_ABBREVIATION"], as_index=False)
                .agg(FP=("fantasy_points","sum"))
@@ -503,18 +584,23 @@ elif page == "Records":
         topN = topN[["Rank","Photo","Player","Team","SEASON","Fantasy Points","PLAYER_ID"]].rename(columns={"SEASON":"Season"})
         render_table(topN.drop(columns=["PLAYER_ID"]))
 
-        st.download_button("Download Season Records (CSV)",
-                           data=topN.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
-                           file_name="season_records.csv", mime="text/csv")
+        st.download_button(
+            "Download Season Records (CSV)",
+            data=topN.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
+            file_name="season_records.csv", mime="text/csv"
+        )
 
+    # Career Records
     with tab2:
         st.subheader("Career Records")
+
         career_totals = (
             df_f.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False)
                 .agg(Fantasy_Points=("fantasy_points","sum"))
                 .sort_values("Fantasy_Points", ascending=False)
                 .head(top_n)
         )
+
         team_totals = (
             df_f.groupby(["PLAYER_ID","TEAM_ABBREVIATION"], as_index=False)
                 .agg(FP=("fantasy_points","sum"))
@@ -530,12 +616,16 @@ elif page == "Records":
         out = out[["Rank","Photo","Player","Team","Fantasy Points","PLAYER_ID"]]
         render_table(out.drop(columns=["PLAYER_ID"]))
 
-        st.download_button("Download Career Records (CSV)",
-                           data=out.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
-                           file_name="career_records.csv", mime="text/csv")
+        st.download_button(
+            "Download Career Records (CSV)",
+            data=out.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
+            file_name="career_records.csv", mime="text/csv"
+        )
 
+    # Game Records (patched: idempotent cols)
     with tab3:
         st.subheader("Game Records")
+
         game_top = df_f.sort_values("fantasy_points", ascending=False).head(top_n).copy()
         game_top["Team"] = game_top["TEAM_ABBREVIATION"]
         game_top["Opponent"] = game_top.get("OPPONENT_ABBREVIATION", "")
@@ -551,87 +641,61 @@ elif page == "Records":
             if col not in out.columns:
                 out[col] = pd.NA
         out = out[cols_order]
+
         render_table(out.drop(columns=["PLAYER_ID"]))
-        st.download_button("Download Game Records (CSV)",
-                           data=out.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
-                           file_name="game_records.csv", mime="text/csv")
 
-# ========================= Chat Page =========================
+        st.download_button(
+            "Download Game Records (CSV)",
+            data=out.drop(columns=["Photo","PLAYER_ID"]).to_csv(index=False).encode("utf-8"),
+            file_name="game_records.csv", mime="text/csv"
+        )
+
+# =========================
+# Chat Page (GPT‑3.5)
+# =========================
 elif page == "Chat":
-    st.title("💬 Chat")
-    st.caption("Ask anything about NBA, fantasy scoring, or this app. I understand multiple languages and abbreviations.")
+    st.title("💬 Fantasy NBA Chat")
+    st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
 
-    # OpenAI client setup (from secrets or env var)
-    api_key = st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+    # API Key handling (secrets or session input)
+    if "OPENAI_API_KEY" not in st.session_state:
+        st.session_state["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
 
-    with st.expander("How to set the API key (OpenAI)"):
-        st.markdown(
-            """
-            **Streamlit Cloud** → *Manage app* → **Settings** → **Secrets** → add:
-            ```toml
-            OPENAI_API_KEY = "your_key_here"
-            ```
-            **Local**: create `.streamlit/secrets.toml` with the same content, or set env var `OPENAI_API_KEY`.
-            """
-        )
+    with st.expander("API Key (optional override)"):
+        key_in = st.text_input("OpenAI API Key (stored only for this session)", type="password", value=st.session_state["OPENAI_API_KEY"])
+        if st.button("Use this key for this session"):
+            st.session_state["OPENAI_API_KEY"] = key_in
+            st.success("API key set for this session.")
 
-    if not api_key:
-        st.error("Missing `OPENAI_API_KEY`. Add it to Streamlit Secrets or environment variables.")
-        st.stop()
+    if st.session_state["OPENAI_API_KEY"]:
+        openai.api_key = st.session_state["OPENAI_API_KEY"]
 
-    # Model controls
-    colm1, colm2 = st.columns([2,1])
-    with colm1:
-        model = st.selectbox(
-            "Model",
-            options=["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
-            index=0,
-            help="Multilingual models that handle abbreviations well."
-        )
-    with colm2:
-        temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
 
-    # Show chat history
-    for msg in st.session_state["chat_history"]:
+    # Render history
+    for msg in st.session_state["messages"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Input
-    user_input = st.chat_input("Type your message...")
-    if user_input:
-        # Append user message
-        st.session_state["chat_history"].append({"role": "user", "content": user_input})
+    # Input & response
+    if prompt := st.chat_input("Ask me anything about NBA Fantasy..."):
+        st.session_state["messages"].append({"role": "user", "content": prompt})
         with st.chat_message("user"):
-            st.markdown(user_input)
+            st.markdown(prompt)
 
-        # Prepare messages (system + history)
-        system_prompt = (
-            "You are a helpful assistant specialized in NBA data and fantasy analytics. "
-            "You understand abbreviations (PTS, AST, REB, STL, BLK, 3PA/3PM, etc.), "
-            "and you respond in the user's language. Be concise, accurate, and actionable."
-        )
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(st.session_state["chat_history"])
-
-        # Call OpenAI (OpenAI Python SDK v1.x)
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-            )
-            answer = resp.choices[0].message.content
-        except Exception as e:
-            answer = f"Sorry, I couldn't reach the chat service. Error: {e}"
-
-        # Append assistant message
-        st.session_state["chat_history"].append({"role": "assistant", "content": answer})
         with st.chat_message("assistant"):
-            st.markdown(answer)
+            try:
+                # Using legacy OpenAI API (compatible with openai<1.0)
+                resp = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role":"system","content":"You are an NBA Fantasy expert assistant."}] + st.session_state["messages"],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                reply = resp.choices[0].message["content"]
+            except Exception as e:
+                reply = f"⚠️ Sorry, I couldn't reach the chat service. Error: {e}\n\nTip: Check your API key and quota."
 
-    # Clear chat
-    if st.button("Clear chat"):
-        st.session_state["chat_history"] = []
-        st.success("Chat history cleared.")
+            st.markdown(reply)
+            st.session_state["messages"].append({"role": "assistant", "content": reply})
