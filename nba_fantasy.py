@@ -12,7 +12,6 @@ import streamlit as st
 import openai
 
 from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo
-
 # =========================
 # Page Config + Light Theme (white bg, black text)
 # =========================
@@ -71,10 +70,8 @@ def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     return team, opp, is_home
 
 # =========================
-# Data Fetch (cached per season/type) — Regular Season only
+# Data Fetch (cached per season) — Regular Season only
 # =========================
-VALID_SEASON_TYPES = ["Regular Season"]
-
 @st.cache_data(show_spinner=False, persist=True)
 def fetch_one_season_regular(season_label: str, timeout_s: int = 10) -> pd.DataFrame:
     """
@@ -275,7 +272,7 @@ def primary_position_letter(position: str) -> str:
     """Map 'G', 'F', 'C', 'G-F', 'F-C' -> primary letter."""
     if not position:
         return ""
-    return position.strip().upper()[0]  # first letter is enough for grouping (G/F/C)
+    return position.strip().upper()[0]  # first letter (G/F/C)
 
 # =========================
 # Session Defaults
@@ -299,11 +296,11 @@ if st.sidebar.button("Refresh data (clear cache)"):
     st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
 # =========================
-# Setup Page
+# Setup Page (no inputs for date range; always 2020-21+ Regular)
 # =========================
 if page == "Setup":
     st.title("⚙️ Setup")
-    st.caption("Set your League Scoring Settings and load data. This app uses Regular Season data only (no Playoffs).")
+    st.caption("This app uses Regular Season data only (no Playoffs).")
     st.info("**Data coverage:** Regular Seasons from **2020‑21** to the current season. No Playoffs.")
 
     # Scoring settings
@@ -391,7 +388,7 @@ if page == "Setup":
 # =========================
 elif page == "Records":
     st.title("🏀 Records")
-    st.caption("Leaderboards by Season, Career, and Game (Regular Season only).")
+    st.caption("Leaderboards by Season, Career, and Game (Regular Season only, 2020‑present).")
 
     if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
         st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
@@ -520,7 +517,7 @@ elif page == "Records":
         render_table(out.drop(columns=["PLAYER_ID"]))
 
 # =========================
-# Player Insights Page
+# Player Insights Page (with "Generate Insights" button)
 # =========================
 elif page == "Player Insights":
     st.title("📊 Player Insights")
@@ -550,35 +547,42 @@ elif page == "Player Insights":
 
     df_season_team = df_season[df_season["TEAM_ABBREVIATION"] == sel_team].copy()
     players = df_season_team[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates().sort_values("PLAYER_NAME")
+    if players.empty:
+        st.warning("No players found for this team/season.")
+        st.stop()
+
     player_display = players["PLAYER_NAME"].tolist()
     player_ids = players["PLAYER_ID"].tolist()
     name_to_id = dict(zip(player_display, player_ids))
     sel_player_name = st.selectbox("Player", options=player_display, index=0)
     sel_player_id = name_to_id[sel_player_name]
 
-    # ---- Player info + KPIs
+    # ---- Button to generate insights (only after filters are set)
+    generate = st.button("Generate Insights")
+
+    if not generate:
+        st.info("Set the filters above and click **Generate Insights** to view the visuals.")
+        st.stop()
+
+    # Headshot + position
     colA, colB = st.columns([1, 2])
     with colA:
         st.image(player_headshot_url(sel_player_id), width=220)
         pos_str = get_player_position(sel_player_id)
         st.write(f"**Position:** {pos_str if pos_str else 'N/A'}")
 
-    # Player games for the selection
+    # Player games for selection
     p_games = df_season_team[df_season_team["PLAYER_ID"] == sel_player_id].copy()
     if p_games.empty:
         st.warning("No games found for this player/season/team.")
         st.stop()
 
-    # Weekly indexing (Week 1, Week 2, ... based on season's first game date in dataset)
+    # Weekly metrics
     season_start_date = df_season["GAME_DATE"].min()
     p_games["WEEK"] = ((p_games["GAME_DATE"] - season_start_date).dt.days // 7 + 1).astype(int)
-
-    # Weekly AVG and weekly MAX per week
     weekly_avg = p_games.groupby("WEEK", as_index=False).agg(avg_fp=("fantasy_points","mean"))
     weekly_max = p_games.groupby("WEEK", as_index=False).agg(max_fp=("fantasy_points","max"))
     avg_of_weekly_max = weekly_max["max_fp"].mean() if not weekly_max.empty else float("nan")
-
-    # Season-level averages
     avg_fp_season = p_games["fantasy_points"].mean()
 
     # Ranks: overall and by position (league-wide within the season)
@@ -587,17 +591,14 @@ elif page == "Player Insights":
         GP=("GAME_ID","nunique"),
         avg_fp=("fantasy_points","mean")
     )
-
-    # Attach positions (cached per player id)
+    # Attach positions
     per_player["POSITION"] = per_player["PLAYER_ID"].apply(get_player_position)
     per_player["POS_PRIMARY"] = per_player["POSITION"].apply(primary_position_letter)
 
-    # Overall rank (by avg_fp desc)
     per_player_sorted = per_player.sort_values("avg_fp", ascending=False).reset_index(drop=True)
     overall_rank = (per_player_sorted.index[per_player_sorted["PLAYER_ID"] == sel_player_id][0] + 1) if sel_player_id in per_player_sorted["PLAYER_ID"].values else None
     overall_count = len(per_player_sorted)
 
-    # Position rank
     player_primary_pos = primary_position_letter(pos_str)
     in_pos = per_player_sorted[per_player_sorted["POS_PRIMARY"] == player_primary_pos].copy()
     if not in_pos.empty and sel_player_id in in_pos["PLAYER_ID"].values:
@@ -618,37 +619,32 @@ elif page == "Player Insights":
 
     st.markdown("---")
     st.subheader("Weekly Trend")
-
-    # Build Altair chart with weekly average (line) + horizontal rule (avg weekly max)
     try:
         import altair as alt
+        # Line for weekly average
         base = alt.Chart(weekly_avg).mark_line(point=True, color="#1A73E8").encode(
             x=alt.X("WEEK:O", title="Week"),
             y=alt.Y("avg_fp:Q", title="Weekly average fantasy points"),
             tooltip=[alt.Tooltip("WEEK:O"), alt.Tooltip("avg_fp:Q", format=".2f")]
         )
+        # Horizontal rule for average of weekly max
         hrule = alt.Chart(pd.DataFrame({"y": [avg_of_weekly_max]})).mark_rule(color="red").encode(y="y:Q")
         st.altair_chart(base + hrule, use_container_width=True)
         st.caption("Blue line: weekly average. Red line: average of weekly maximum scores.")
     except Exception:
-        # Fallback simple line
         st.line_chart(weekly_avg.set_index("WEEK")["avg_fp"])
         st.info(f"Average of weekly max (red line): {avg_of_weekly_max:.2f}")
 
     st.markdown("---")
     st.subheader("Teammate Impact (with vs without)")
-
-    # Build with/without teammate table
-    # Consider only the selected team & season; co-participation determined by presence in same GAME_ID (rows exist only if played)
+    # Consider only games the player played for this team/season
     team_games = df_season_team[df_season_team["GAME_ID"].isin(p_games["GAME_ID"].unique())].copy()
 
-    # Teammates list (exclude the player)
+    # Teammates (exclude the selected player)
     teammate_rows = team_games[team_games["PLAYER_ID"] != sel_player_id][["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
     results = []
-    p_games_idx = p_games.set_index("GAME_ID")
-
-    # Pre-compute player's FP by game (to re-use)
-    player_fp_by_game = p_games.groupby("GAME_ID")["fantasy_points"].mean()  # if duplicate rows existed, but should be one per game
+    # Player FP by game
+    player_fp_by_game = p_games.groupby("GAME_ID")["fantasy_points"].mean()
     games_all = set(player_fp_by_game.index)
 
     for _, row in teammate_rows.iterrows():
@@ -665,7 +661,6 @@ elif page == "Player Insights":
         results.append({"Teammate": tm_name, "With": avg_with, "Without": avg_without})
 
     impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
-    # Format and show
     show_df = impact_df.copy()
     for c in ["With","Without"]:
         show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
