@@ -48,7 +48,7 @@ st.markdown(
 )
 
 # =========================
-# OpenAI (Chat)
+# OpenAI (Chat) – opcional
 # =========================
 openai.api_key = st.secrets.get("OPENAI_API_KEY", "")
 
@@ -155,8 +155,10 @@ def load_regular_2020_to_current(
 
 def clear_all_caches():
     fetch_one_season_regular.clear()
-    season_positions_map.clear()
-    get_player_position.cache_clear() if hasattr(get_player_position, "cache_clear") else None
+    if hasattr(season_positions_map, "clear"):
+        season_positions_map.clear()
+    if hasattr(get_player_position, "clear"):
+        get_player_position.clear()
 
 # =========================
 # Fantasy Scoring (full rules)
@@ -300,7 +302,6 @@ def season_positions_map(season_label: str, team_ids: Tuple[int, ...]) -> pd.Dat
         try:
             roster = commonteamroster.CommonTeamRoster(season=season_label, team_id=int(tid))
             rdf = roster.get_data_frames()[0]
-            # Expect columns: PLAYER_ID, PLAYER, POSITION, etc.
             rows.append(rdf[["PLAYER_ID", "POSITION"]])
         except Exception:
             continue
@@ -309,7 +310,6 @@ def season_positions_map(season_label: str, team_ids: Tuple[int, ...]) -> pd.Dat
         pos_df = pd.concat(rows, ignore_index=True).drop_duplicates("PLAYER_ID")
     else:
         pos_df = pd.DataFrame(columns=["PLAYER_ID", "POSITION"])
-    # Fill missing via fallback (rare)
     pos_df["PLAYER_ID"] = pos_df["PLAYER_ID"].astype("Int64")
     return pos_df
 
@@ -605,7 +605,7 @@ elif page == "Player Insights":
     # Build season-wide positions via team rosters (fast)
     season_team_ids = tuple(sorted(df_season["TEAM_ID"].dropna().astype(int).unique().tolist()))
     pos_map_df = season_positions_map(sel_season, season_team_ids)
-    # Fallback for selected player if missing
+    # Fallback para o jogador selecionado, se não vier no roster
     if pos_map_df.empty or sel_player_id not in pos_map_df["PLAYER_ID"].astype(int).tolist():
         fallback_pos = get_player_position(sel_player_id)
         pos_map_df = pd.concat([pos_map_df, pd.DataFrame([{"PLAYER_ID": sel_player_id, "POSITION": fallback_pos}])], ignore_index=True)
@@ -719,7 +719,6 @@ elif page == "Player Insights":
             """, unsafe_allow_html=True
         )
     except Exception:
-        # Fallback simple chart
         merged = weekly_avg.merge(weekly_max, on="WEEK", how="outer").sort_values("WEEK")
         merged = merged.set_index("WEEK")
         st.line_chart(merged.rename(columns={"avg_fp":"Weekly average", "max_fp":"Weekly max"}))
@@ -858,26 +857,58 @@ elif page == "League Insights":
     st.markdown("---")
     st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
 
-    # Buckets
+    # ====== PATCHED SECTION (fix KeyError with MultiIndex) ======
+    # Faixas (bins)
     bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
     labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
 
-    # Build counts per player (top 50 by avg_fp)
-    top50_players = per_player.head(50)["PLAYER_ID"].tolist()
-    df_top = df_s[df_s["PLAYER_ID"].isin(top50_players)].copy()
+    # Top 50 por média de FPTS na temporada selecionada
+    per_player_top = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False) \
+                         .agg(avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")) \
+                         .sort_values("avg_fp", ascending=False).reset_index(drop=True)
+
+    top50_ids = per_player_top.head(50)["PLAYER_ID"].astype(int).tolist()
+
+    # Filtrar jogos desses jogadores
+    df_top = df_s[df_s["PLAYER_ID"].astype(int).isin(top50_ids)].copy()
     df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
 
-    counts = (df_top.groupby(["PLAYER_ID","PLAYER_NAME","bucket"])
-                    .size().unstack(fill_value=0).reindex(columns=labels, fill_value=0))
-    counts = counts.loc[per_player.head(50)["PLAYER_ID"]]  # keep sorted by avg_fp
-    counts.insert(0, "PLAYER_NAME", per_player.set_index("PLAYER_ID").loc[counts.index, "PLAYER_NAME"].values)
+    # Contagem por faixa (somente PLAYER_ID no índice)
+    tmp_counts = (
+        df_top.groupby(["PLAYER_ID","bucket"])
+              .size()
+              .unstack(fill_value=0)
+              .reindex(columns=labels, fill_value=0)
+              .reset_index()
+    )
 
-    # Heatmap styling
-    styled = counts.style.background_gradient(axis=0, cmap="YlOrRd", subset=labels).format(na_rep="0")
+    # Colar nomes (merge) e reordenar na ordem do Top 50 (por avg_fp)
+    names_map = per_player_top[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
+    counts = tmp_counts.merge(names_map, on="PLAYER_ID", how="left")
+
+    # Reordenar pelo ranking do per_player_top
+    order_idx = pd.Index(top50_ids, dtype=int)
+    counts["PLAYER_ID"] = counts["PLAYER_ID"].astype(int)
+    counts = counts.set_index("PLAYER_ID").reindex(order_idx).reset_index()
+
+    # Colocar PLAYER_NAME como primeira coluna
+    counts.insert(0, "PLAYER_NAME", counts.pop("PLAYER_NAME"))
+
+    # Preencher faltas de nome (raro) com '—'
+    counts["PLAYER_NAME"] = counts["PLAYER_NAME"].fillna("—")
+
+    # Heatmap por coluna (gradiente)
+    heat_cols = labels
+    styled = counts[["PLAYER_NAME"] + heat_cols] \
+        .style \
+        .background_gradient(axis=0, cmap="YlOrRd", subset=heat_cols) \
+        .format(na_rep="0")
+
     st.dataframe(styled, use_container_width=True)
+    # ====== END PATCHED SECTION ======
 
 # =========================
-# Chat Page (GPT‑3.5)
+# Chat Page (GPT‑3.5) – opcional
 # =========================
 elif page == "Chat":
     st.title("💬 Fantasy NBA Chat")
