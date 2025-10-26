@@ -783,8 +783,8 @@ elif page == "League Insights":
     df_s = df_s.merge(pos_map_df, on="PLAYER_ID", how="left")
 df_s = df_s[df_s["POS_PRIMARY"] != "U"]
     # Fallback letter (if any missing)
-    df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
-    df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
+df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
+df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
     st.markdown("### Position boxplot (FPTS by position)")
     try:
