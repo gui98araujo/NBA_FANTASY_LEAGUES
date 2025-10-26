@@ -756,13 +756,13 @@ elif page == "Player Insights":
             "Without": avg_without
         })
 
-	    impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
+impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
 	    # Reorder columns for better visualization
-	    impact_df = impact_df[["Teammate", "Games With", "With", "Games Without", "Without"]]
-    show_df = impact_df.copy()
-	    for c in ["With","Without"]:
-        show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-    st.dataframe(show_df, use_container_width=True)
+impact_df = impact_df[["Teammate", "Games With", "With", "Games Without", "Without"]]
+show_df = impact_df.copy()
+for c in ["With","Without"]:
+    show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+st.dataframe(show_df, use_container_width=True)
 
 # =========================
 # League Insights Page (season filter only here)
