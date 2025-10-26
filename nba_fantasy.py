@@ -831,6 +831,19 @@ elif page == "League Insights":
             tooltip=[alt.Tooltip("Stat:N"), alt.Tooltip("Avg FPTS contribution:Q", format=".2f")]
         )
         st.altair_chart(bars, use_container_width=True)
+
+# Insight sobre contribuição de estatísticas
+st.markdown("#### Insight Analysis: Stat Contributions to FPTS")
+st.markdown("""
+O gráfico de barras mostra quais estatísticas mais contribuem para os pontos de fantasy.
+
+Principais observações:
+- **Pontos (PTS)** e **assistências (AST)** são os maiores contribuintes, refletindo o foco ofensivo da pontuação.
+- **Rebotes ofensivos (OREB)** e **defensivos (DREB)** também têm impacto relevante, especialmente para alas e pivôs.
+- **Turnovers (TOV)** e **arremessos perdidos** têm impacto negativo, penalizando jogadores com baixa eficiência.
+
+Esse insight é valioso para identificar jogadores que, mesmo com pontuação bruta alta, podem ter baixo retorno em fantasy por ineficiência ou excesso de erros.
+""")
     except Exception:
         st.dataframe(avg_contrib)
 
