@@ -746,7 +746,13 @@ elif page == "Player Insights":
         avg_with = player_fp_by_game.loc[list(with_games)].mean() if with_games else np.nan
         avg_without = player_fp_by_game.loc[list(without_games)].mean() if without_games else np.nan
 
-        results.append({"Teammate": tm_name, "With": avg_with, "Without": avg_without})
+        results.append({
+            "Teammate": tm_name,
+            "With": avg_with,
+            "Without": avg_without,
+            "Games With": len(with_games),
+            "Games Without": len(without_games)
+        })
 
     impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
     show_df = impact_df.copy()
@@ -788,16 +794,24 @@ elif page == "League Insights":
     df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
     df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
-    st.markdown("### Position boxplot (FPTS by position)")
-    try:
-        import altair as alt
-        bp = alt.Chart(df_s).mark_boxplot(outliers=True).encode(
-            x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
-            y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
-            color=alt.Color("POS_PRIMARY:N", legend=None)
-        )
-        st.altair_chart(bp, use_container_width=True)
-    except Exception:
+st.markdown("### Position violin plot (FPTS by position)")
+try:
+    import altair as alt
+    violin = alt.Chart(df_s).transform_density(
+        'fantasy_points',
+        as_=['fantasy_points', 'density'],
+        extent=[df_s['fantasy_points'].min(), df_s['fantasy_points'].max()],
+        groupby=['POS_PRIMARY']
+    ).mark_area(orient='horizontal').encode(
+        y=alt.Y('fantasy_points:Q', title='Fantasy points (per game)'),
+        x=alt.X('density:Q', stack='center', title='Density'),
+        color=alt.Color('POS_PRIMARY:N', legend=alt.Legend(title='Position')),
+        row='POS_PRIMARY:N'
+    ).properties(height=100, width=300)
+    st.altair_chart(violin, use_container_width=True)
+except Exception:
+    st.write("Altair not available, showing simple table sample:")
+    st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
         st.write("Altair not available, showing simple table sample:")
         st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
 
