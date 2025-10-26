@@ -43,9 +43,22 @@ st.markdown(
     .legend-bullet { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle;}
     .legend { font-size: 0.95rem; font-weight: 600; color:#101828; }
     </style>
+<style>
+div[data-testid="stTabs"] {
+    margin-top: -40px;
+}
+div[data-testid="stTabs"] button {
+    font-size: 1.2rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+}
+</style>
     """,
     unsafe_allow_html=True
 )
+
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(['⚙️ Setup', '🏀 Records', '📊 Player Insights', '📈 League Insights', '💬 Chat'])
 
 # =========================
 # OpenAI (Chat) – opcional
@@ -323,23 +336,11 @@ if "raw_df" not in st.session_state:
 if "started" not in st.session_state:
     st.session_state["started"] = False
 
+# =========================
+# Sidebar & Navigation
+# =========================
 
 # =========================
-# Top Navigation Tabs
-# =========================
-st.markdown("""
-<style>
-/* Move tabs closer to top and increase font size */
-div[data-testid="stTabs"] button {
-    font-size: 1.2rem;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
-}
-</style>
-""", unsafe_allow_html=True)
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Setup", "🏀 Records", "📊 Player Insights", "📈 League Insights", "💬 Chat"])
-
 # Setup Page (2020-21+ Regular only)
 # =========================
 with tab1:
