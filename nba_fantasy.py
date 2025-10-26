@@ -804,9 +804,9 @@ st.markdown("---")
 st.markdown("### What stats contribute most to FPTS? (season average per game)")
 
     # Build per-row contributions (base categories only, bonuses excluded)
-    s = st.session_state["scoring"]
-    d = df_s.fillna(0).copy()
-    contrib = pd.DataFrame({
+s = st.session_state["scoring"]
+d = df_s.fillna(0).copy()
+contrib = pd.DataFrame({
         "PTS": s["points"] * d["PTS"],
         "AST": s["assist"] * d["AST"],
         "STL": s["steal"] * d["STL"],
@@ -818,40 +818,40 @@ st.markdown("### What stats contribute most to FPTS? (season average per game)")
         "OREB": s["oreb"] * d["OREB"],
         "DREB": s["dreb"] * d["DREB"],
     })
-    avg_contrib = contrib.mean().sort_values(ascending=False).reset_index()
-    avg_contrib.columns = ["Stat", "Avg FPTS contribution"]
+avg_contrib = contrib.mean().sort_values(ascending=False).reset_index()
+avg_contrib.columns = ["Stat", "Avg FPTS contribution"]
 
-    try:
-        import altair as alt
-        bars = alt.Chart(avg_contrib).mark_bar().encode(
-            x=alt.X("Avg FPTS contribution:Q", title="Avg FPTS contribution per game"),
-            y=alt.Y("Stat:N", sort="-x"),
-            color=alt.condition(alt.datum["Avg FPTS contribution"] > 0, alt.value("#1A73E8"), alt.value("#D93025")),
-            tooltip=[alt.Tooltip("Stat:N"), alt.Tooltip("Avg FPTS contribution:Q", format=".2f")]
+try:
+    import altair as alt
+    bars = alt.Chart(avg_contrib).mark_bar().encode(
+        x=alt.X("Avg FPTS contribution:Q", title="Avg FPTS contribution per game"),
+        y=alt.Y("Stat:N", sort="-x"),
+        color=alt.condition(alt.datum["Avg FPTS contribution"] > 0, alt.value("#1A73E8"), alt.value("#D93025")),
+        tooltip=[alt.Tooltip("Stat:N"), alt.Tooltip("Avg FPTS contribution:Q", format=".2f")]
         )
-        st.altair_chart(bars, use_container_width=True)
-    except Exception:
-        st.dataframe(avg_contrib)
+    st.altair_chart(bars, use_container_width=True)
+except Exception:
+    st.dataframe(avg_contrib)
 
-    st.markdown("---")
-    st.markdown("### Position distribution in Top brackets")
+st.markdown("---")
+st.markdown("### Position distribution in Top brackets")
 
     # Rank players by avg fpts (season), then count POS_PRIMARY in ranges
-    per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
+per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
         avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")
     ).sort_values("avg_fp", ascending=False).reset_index(drop=True)
 
-    def count_pos_in_range(dfpp, start, end):
-        sl = dfpp.iloc[start:end]
-        return sl["POS_PRIMARY"].value_counts().rename(f"{start+1}-{end}")
+def count_pos_in_range(dfpp, start, end):
+    sl = dfpp.iloc[start:end]
+    return sl["POS_PRIMARY"].value_counts().rename(f"{start+1}-{end}")
 
-    top50 = count_pos_in_range(per_player, 0, 50)
-    top50_100 = count_pos_in_range(per_player, 50, 100)
-    top100_150 = count_pos_in_range(per_player, 100, 150)
-    dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
-    dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)
+top50 = count_pos_in_range(per_player, 0, 50)
+top50_100 = count_pos_in_range(per_player, 50, 100)
+top100_150 = count_pos_in_range(per_player, 100, 150)
+dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
+dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)
 
-    st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
+st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
 
 
 # === Analytical Insights ===
