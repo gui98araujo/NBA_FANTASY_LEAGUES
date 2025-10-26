@@ -17,30 +17,6 @@ from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo, commonteamr
 # Page Config + Light Theme (white bg, black text)
 # =========================
 st.set_page_config(page_title="Fantasy NBA App", page_icon="🏀", layout="wide")
-st.markdown('''
-<style>
-.stApp { background-color: #FFFFFF; color: #000000; }
-h1,h2,h3,h4,h5,h6,label,p,span,div,code {
-    color: #000000 !important;
-    font-size: 18px !important;
-}
-.stButton>button, .stDownloadButton>button {
-    background-color: #0057FF !important;
-    color: #FFFFFF !important;
-    border: 0;
-    border-radius: 6px;
-    padding: 0.5rem 1rem;
-    font-weight: 600;
-    font-size: 16px !important;
-}
-.stButton>button:hover, .stDownloadButton>button:hover {
-    background-color: #0043C6 !important;
-}
-section[data-testid="stSidebar"] {
-    display: none !important;
-}
-</style>
-''', unsafe_allow_html=True)
 st.markdown(
     """
     <style>
@@ -67,9 +43,22 @@ st.markdown(
     .legend-bullet { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle;}
     .legend { font-size: 0.95rem; font-weight: 600; color:#101828; }
     </style>
+<style>
+div[data-testid="stTabs"] {
+    margin-top: -40px;
+}
+div[data-testid="stTabs"] button {
+    font-size: 1.2rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+}
+</style>
     """,
     unsafe_allow_html=True
 )
+
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(['⚙️ Setup', '🏀 Records', '📊 Player Insights', '📈 League Insights', '💬 Chat'])
 
 # =========================
 # OpenAI (Chat) – opcional
@@ -350,7 +339,7 @@ if "started" not in st.session_state:
 # =========================
 # Sidebar & Navigation
 # =========================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Setup", "🏀 Records", "📊 Player Insights", "📈 League Insights", "💬 Chat"])
+
 # =========================
 # Setup Page (2020-21+ Regular only)
 # =========================
@@ -442,7 +431,7 @@ with tab1:
 # =========================
 # Records Page
 # =========================
-with tab2:
+elwith tab2:
     st.title("🏀 Records")
     st.caption("Leaderboards by Season, Career, and Game (Regular Season only, 2020‑present).")
 
@@ -575,7 +564,7 @@ with tab2:
 # =========================
 # Player Insights Page (Generate Insights button) – league-wide position rank
 # =========================
-with tab3:
+elwith tab3:
     st.title("📊 Player Insights")
     st.caption("Filter by Season, Team and Player. Regular Season only (2020‑present).")
 
@@ -774,7 +763,7 @@ with tab3:
 # =========================
 # League Insights Page (season filter only here)
 # =========================
-with tab4:
+elwith tab4:
     st.title("📈 League Insights")
     st.caption("Season-wide position analysis and distributions (Regular Season, 2020‑present).")
 
@@ -927,7 +916,7 @@ with tab4:
 # =========================
 # Chat Page (GPT‑3.5) – opcional
 # =========================
-with tab5:
+elwith tab5:
     st.title("💬 Fantasy NBA Chat")
     st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
 
