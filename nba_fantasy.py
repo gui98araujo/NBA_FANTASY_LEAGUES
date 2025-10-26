@@ -724,43 +724,35 @@ elif page == "Player Insights":
         st.line_chart(merged.rename(columns={"avg_fp":"Weekly average", "max_fp":"Weekly max"}))
 
     st.markdown("---")
-st.subheader("Teammate Impact (with vs without)")
-team_games = df_season_team[df_season_team["GAME_ID"].isin(p_games["GAME_ID"].unique())].copy()
+    st.subheader("Teammate Impact (with vs without)")
+    # Consider only games the player played for this team/season
+    team_games = df_season_team[df_season_team["GAME_ID"].isin(p_games["GAME_ID"].unique())].copy()
 
-# Teammates (exclui o jogador selecionado)
-teammate_rows = team_games[team_games["PLAYER_ID"] != sel_player_id][["PLAYER_ID", "PLAYER_NAME"]].drop_duplicates()
+    # Teammates (exclude the selected player)
+    teammate_rows = team_games[team_games["PLAYER_ID"] != sel_player_id][["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
+    results = []
+    # Player FP by game
+    player_fp_by_game = p_games.groupby("GAME_ID")["fantasy_points"].mean()
+    games_all = set(player_fp_by_game.index)
 
-# Player FP por jogo
-player_fp_by_game = p_games.groupby("GAME_ID")["fantasy_points"].mean()
-games_all = set(player_fp_by_game.index)
+    for _, row in teammate_rows.iterrows():
+        tm_id = int(row["PLAYER_ID"])
+        tm_name = row["PLAYER_NAME"]
 
-results = []
-for _, row in teammate_rows.iterrows():
-    tm_id = int(row["PLAYER_ID"])
-    tm_name = row["PLAYER_NAME"]
+        tm_games_present = set(team_games.loc[team_games["PLAYER_ID"] == tm_id, "GAME_ID"].unique().tolist())
+        with_games = games_all.intersection(tm_games_present)
+        without_games = games_all.difference(tm_games_present)
 
-    tm_games_present = set(team_games.loc[team_games["PLAYER_ID"] == tm_id, "GAME_ID"].unique().tolist())
-    with_games = games_all.intersection(tm_games_present)
-    without_games = games_all.difference(tm_games_present)
+        avg_with = player_fp_by_game.loc[list(with_games)].mean() if with_games else np.nan
+        avg_without = player_fp_by_game.loc[list(without_games)].mean() if without_games else np.nan
 
-    avg_with = player_fp_by_game.loc[list(with_games)].mean() if with_games else np.nan
-    avg_without = player_fp_by_game.loc[list(without_games)].mean() if without_games else np.nan
+        results.append({"Teammate": tm_name, "With": avg_with, "Without": avg_without})
 
-    results.append({
-        "Teammate": tm_name,
-        "With": avg_with,
-        "Without": avg_without,
-        "Games With": len(with_games),
-        "Games Without": len(without_games)
-    })
-
-impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
-show_df = impact_df.copy()
-for c in ["With", "Without"]:
-    show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-
-st.dataframe(show_df, use_container_width=True)
-
+    impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
+    show_df = impact_df.copy()
+    for c in ["With","Without"]:
+        show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    st.dataframe(show_df, use_container_width=True)
 
 # =========================
 # League Insights Page (season filter only here)
