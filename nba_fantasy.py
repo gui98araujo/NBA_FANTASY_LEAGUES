@@ -786,7 +786,7 @@ df_s = df_s[df_s["POS_PRIMARY"] != "U"]
 df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
 df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
-    st.markdown("### Position boxplot (FPTS by position)")
+st.markdown("### Position boxplot (FPTS by position)")
     try:
         import altair as alt
         bp = alt.Chart(df_s).mark_violin().encode(
