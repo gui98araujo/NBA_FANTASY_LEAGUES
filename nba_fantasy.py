@@ -326,10 +326,13 @@ if "started" not in st.session_state:
 # =========================
 # Sidebar & Navigation
 # =========================
-page = st.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
-clear_all_caches()
-st.session_state["raw_df"] = pd.DataFrame()
-st.session_state["started"] = False
+page = st.sidebar.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
+st.sidebar.write("---")
+if st.sidebar.button("Refresh data (clear cache)"):
+    clear_all_caches()
+    st.session_state["raw_df"] = pd.DataFrame()
+    st.session_state["started"] = False
+    st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
 # =========================
 # Setup Page (2020-21+ Regular only)
@@ -781,32 +784,30 @@ elif page == "League Insights":
     season_team_ids = tuple(sorted(df_s["TEAM_ID"].dropna().astype(int).unique().tolist()))
     pos_map_df = season_positions_map(sel_season, season_team_ids)
     df_s = df_s.merge(pos_map_df, on="PLAYER_ID", how="left")
-df_s = df_s[df_s["POS_PRIMARY"] != "U"]
     # Fallback letter (if any missing)
-df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
-df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
+    df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
+    df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
-st.markdown("### Position boxplot (FPTS by position)")
-try:
-    import altair as alt
-    bp = alt.Chart(df_s).mark_violin().encode(
-        x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
-        y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
-        color=alt.Color("POS_PRIMARY:N", legend=None)
-        
-    )
-    st.altair_chart(bp, use_container_width=True)
-except Exception:
-    st.write("Altair not available, showing simple table sample:")
-    st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
+    st.markdown("### Position boxplot (FPTS by position)")
+    try:
+        import altair as alt
+        bp = alt.Chart(df_s).mark_boxplot(outliers=True).encode(
+            x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
+            y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
+            color=alt.Color("POS_PRIMARY:N", legend=None)
+        )
+        st.altair_chart(bp, use_container_width=True)
+    except Exception:
+        st.write("Altair not available, showing simple table sample:")
+        st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
 
-st.markdown("---")
-st.markdown("### What stats contribute most to FPTS? (season average per game)")
+    st.markdown("---")
+    st.markdown("### What stats contribute most to FPTS? (season average per game)")
 
     # Build per-row contributions (base categories only, bonuses excluded)
-s = st.session_state["scoring"]
-d = df_s.fillna(0).copy()
-contrib = pd.DataFrame({
+    s = st.session_state["scoring"]
+    d = df_s.fillna(0).copy()
+    contrib = pd.DataFrame({
         "PTS": s["points"] * d["PTS"],
         "AST": s["assist"] * d["AST"],
         "STL": s["steal"] * d["STL"],
@@ -818,71 +819,62 @@ contrib = pd.DataFrame({
         "OREB": s["oreb"] * d["OREB"],
         "DREB": s["dreb"] * d["DREB"],
     })
-avg_contrib = contrib.mean().sort_values(ascending=False).reset_index()
-avg_contrib.columns = ["Stat", "Avg FPTS contribution"]
+    avg_contrib = contrib.mean().sort_values(ascending=False).reset_index()
+    avg_contrib.columns = ["Stat", "Avg FPTS contribution"]
 
-try:
-    import altair as alt
-    bars = alt.Chart(avg_contrib).mark_bar().encode(
-        x=alt.X("Avg FPTS contribution:Q", title="Avg FPTS contribution per game"),
-        y=alt.Y("Stat:N", sort="-x"),
-        color=alt.condition(alt.datum["Avg FPTS contribution"] > 0, alt.value("#1A73E8"), alt.value("#D93025")),
-        tooltip=[alt.Tooltip("Stat:N"), alt.Tooltip("Avg FPTS contribution:Q", format=".2f")]
+    try:
+        import altair as alt
+        bars = alt.Chart(avg_contrib).mark_bar().encode(
+            x=alt.X("Avg FPTS contribution:Q", title="Avg FPTS contribution per game"),
+            y=alt.Y("Stat:N", sort="-x"),
+            color=alt.condition(alt.datum["Avg FPTS contribution"] > 0, alt.value("#1A73E8"), alt.value("#D93025")),
+            tooltip=[alt.Tooltip("Stat:N"), alt.Tooltip("Avg FPTS contribution:Q", format=".2f")]
         )
-    st.altair_chart(bars, use_container_width=True)
-except Exception:
-    st.dataframe(avg_contrib)
+        st.altair_chart(bars, use_container_width=True)
+    except Exception:
+        st.dataframe(avg_contrib)
 
-st.markdown("---")
-st.markdown("### Position distribution in Top brackets")
+    st.markdown("---")
+    st.markdown("### Position distribution in Top brackets")
 
     # Rank players by avg fpts (season), then count POS_PRIMARY in ranges
-per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
+    per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
         avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")
     ).sort_values("avg_fp", ascending=False).reset_index(drop=True)
 
-def count_pos_in_range(dfpp, start, end):
-    sl = dfpp.iloc[start:end]
-    return sl["POS_PRIMARY"].value_counts().rename(f"{start+1}-{end}")
+    def count_pos_in_range(dfpp, start, end):
+        sl = dfpp.iloc[start:end]
+        return sl["POS_PRIMARY"].value_counts().rename(f"{start+1}-{end}")
 
-top50 = count_pos_in_range(per_player, 0, 50)
-top50_100 = count_pos_in_range(per_player, 50, 100)
-top100_150 = count_pos_in_range(per_player, 100, 150)
-dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
-dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)
+    top50 = count_pos_in_range(per_player, 0, 50)
+    top50_100 = count_pos_in_range(per_player, 50, 100)
+    top100_150 = count_pos_in_range(per_player, 100, 150)
+    dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
+    dist = dist.reindex(["G","F","C","U"]).fillna(0).astype(int)
 
-st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
+    st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
 
-
-# === Analytical Insights ===
-st.markdown("### Insights")
-
-st.markdown("#### Violin Plot Insight")
-st.info("The violin plot reveals the distribution of fantasy points across player positions. Guards (G) tend to have a wider spread and higher median FPTS, indicating variability and potential for high performance. Forwards (F) and Centers (C) show more consistent distributions, with Centers generally having slightly higher median FPTS.")
-
-st.markdown("#### FPTS Contribution Insight")
-st.info("The bar chart of average FPTS contributions highlights that points scored (PTS), assists (AST), and rebounds (OREB/DREB) are the most significant contributors to fantasy points. Turnovers (TOV) and missed 3-pointers negatively impact FPTS, emphasizing the importance of efficiency.")
-st.markdown("---")
-st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
+    st.markdown("---")
+    st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
 
     # ====== PATCHED SECTION (fix KeyError with MultiIndex) ======
     # Faixas (bins)
-bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
-labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
+    bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
+    labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
 
     # Top 50 por média de FPTS na temporada selecionada
-per_player_top = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False) \
+    per_player_top = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False) \
                          .agg(avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")) \
                          .sort_values("avg_fp", ascending=False).reset_index(drop=True)
 
-top50_ids = per_player_top.head(50)["PLAYER_ID"].astype(int).tolist()
+    top50_ids = per_player_top.head(50)["PLAYER_ID"].astype(int).tolist()
 
     # Filtrar jogos desses jogadores
-df_top = df_s[df_s["PLAYER_ID"].astype(int).isin(top50_ids)].copy()
-df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
+    df_top = df_s[df_s["PLAYER_ID"].astype(int).isin(top50_ids)].copy()
+    df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
 
     # Contagem por faixa (somente PLAYER_ID no índice)
-tmp_counts = (
+    tmp_counts = (
         df_top.groupby(["PLAYER_ID","bucket"])
               .size()
               .unstack(fill_value=0)
@@ -891,30 +883,71 @@ tmp_counts = (
     )
 
     # Colar nomes (merge) e reordenar na ordem do Top 50 (por avg_fp)
-names_map = per_player_top[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
-counts = tmp_counts.merge(names_map, on="PLAYER_ID", how="left")
+    names_map = per_player_top[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
+    counts = tmp_counts.merge(names_map, on="PLAYER_ID", how="left")
 
     # Reordenar pelo ranking do per_player_top
-order_idx = pd.Index(top50_ids, dtype=int)
-counts["PLAYER_ID"] = counts["PLAYER_ID"].astype(int)
-counts = counts.set_index("PLAYER_ID").reindex(order_idx).reset_index()
+    order_idx = pd.Index(top50_ids, dtype=int)
+    counts["PLAYER_ID"] = counts["PLAYER_ID"].astype(int)
+    counts = counts.set_index("PLAYER_ID").reindex(order_idx).reset_index()
 
     # Colocar PLAYER_NAME como primeira coluna
-counts.insert(0, "PLAYER_NAME", counts.pop("PLAYER_NAME"))
+    counts.insert(0, "PLAYER_NAME", counts.pop("PLAYER_NAME"))
 
     # Preencher faltas de nome (raro) com '—'
-counts["PLAYER_NAME"] = counts["PLAYER_NAME"].fillna("—")
+    counts["PLAYER_NAME"] = counts["PLAYER_NAME"].fillna("—")
 
     # Heatmap por coluna (gradiente)
-heat_cols = labels
-styled = counts[["PLAYER_NAME"] + heat_cols] \
+    heat_cols = labels
+    styled = counts[["PLAYER_NAME"] + heat_cols] \
         .style \
         .background_gradient(axis=0, cmap="YlOrRd", subset=heat_cols) \
         .format(na_rep="0")
 
-st.dataframe(styled, use_container_width=True)
+    st.dataframe(styled, use_container_width=True)
     # ====== END PATCHED SECTION ======
 
 # =========================
 # Chat Page (GPT‑3.5) – opcional
 # =========================
+elif page == "Chat":
+    st.title("💬 Fantasy NBA Chat")
+    st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
+
+    if "OPENAI_API_KEY" not in st.session_state:
+        st.session_state["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
+
+    with st.expander("API Key (optional override)"):
+        key_in = st.text_input("OpenAI API Key (stored only for this session)", type="password", value=st.session_state["OPENAI_API_KEY"])
+        if st.button("Use this key for this session"):
+            st.session_state["OPENAI_API_KEY"] = key_in
+            st.success("API key set for this session.")
+
+    if st.session_state["OPENAI_API_KEY"]:
+        openai.api_key = st.session_state["OPENAI_API_KEY"]
+
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask me anything about NBA Fantasy..."):
+        st.session_state["messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role":"system","content":"You are an NBA Fantasy expert assistant."}] + st.session_state["messages"],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                reply = resp.choices[0].message["content"]
+            except Exception as e:
+                reply = f"⚠️ Sorry, I couldn't reach the chat service. Error: {e}\n\nTip: Check your API key and quota."
+            st.markdown(reply)
+            st.session_state["messages"].append({"role": "assistant", "content": reply})
