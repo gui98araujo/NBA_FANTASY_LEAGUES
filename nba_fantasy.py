@@ -812,8 +812,8 @@ try:
 except Exception:
     st.write("Altair not available, showing simple table sample:")
     st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
-        st.write("Altair not available, showing simple table sample:")
-        st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
+    st.write("Altair not available, showing simple table sample:")
+    st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
 
     st.markdown("---")
     st.markdown("### What stats contribute most to FPTS? (season average per game)")
