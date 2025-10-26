@@ -17,16 +17,30 @@ from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo, commonteamr
 # Page Config + Light Theme (white bg, black text)
 # =========================
 st.set_page_config(page_title="Fantasy NBA App", page_icon="🏀", layout="wide")
-
+st.markdown('''
 <style>
-.stApp {
+.stApp { background-color: #FFFFFF; color: #000000; }
+h1,h2,h3,h4,h5,h6,label,p,span,div,code {
+    color: #000000 !important;
     font-size: 18px !important;
 }
-h1, h2, h3, h4, h5, h6 {
-    font-size: 24px !important;
+.stButton>button, .stDownloadButton>button {
+    background-color: #0057FF !important;
+    color: #FFFFFF !important;
+    border: 0;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    font-size: 16px !important;
+}
+.stButton>button:hover, .stDownloadButton>button:hover {
+    background-color: #0043C6 !important;
+}
+section[data-testid="stSidebar"] {
+    display: none !important;
 }
 </style>
-
+''', unsafe_allow_html=True)
 st.markdown(
     """
     <style>
@@ -337,7 +351,6 @@ if "started" not in st.session_state:
 # Sidebar & Navigation
 # =========================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Setup", "🏀 Records", "📊 Player Insights", "📈 League Insights", "💬 Chat"])
-
 # =========================
 # Setup Page (2020-21+ Regular only)
 # =========================
