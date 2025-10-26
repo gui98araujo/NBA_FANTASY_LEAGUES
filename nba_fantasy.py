@@ -862,27 +862,27 @@ st.info("The violin plot reveals the distribution of fantasy points across playe
 
 st.markdown("#### FPTS Contribution Insight")
 st.info("The bar chart of average FPTS contributions highlights that points scored (PTS), assists (AST), and rebounds (OREB/DREB) are the most significant contributors to fantasy points. Turnovers (TOV) and missed 3-pointers negatively impact FPTS, emphasizing the importance of efficiency.")
-    st.markdown("---")
-    st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
+st.markdown("---")
+st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
 
     # ====== PATCHED SECTION (fix KeyError with MultiIndex) ======
     # Faixas (bins)
-    bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
-    labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
+bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
+labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
 
     # Top 50 por média de FPTS na temporada selecionada
-    per_player_top = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False) \
+per_player_top = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False) \
                          .agg(avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")) \
                          .sort_values("avg_fp", ascending=False).reset_index(drop=True)
 
-    top50_ids = per_player_top.head(50)["PLAYER_ID"].astype(int).tolist()
+top50_ids = per_player_top.head(50)["PLAYER_ID"].astype(int).tolist()
 
     # Filtrar jogos desses jogadores
-    df_top = df_s[df_s["PLAYER_ID"].astype(int).isin(top50_ids)].copy()
-    df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
+df_top = df_s[df_s["PLAYER_ID"].astype(int).isin(top50_ids)].copy()
+df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
 
     # Contagem por faixa (somente PLAYER_ID no índice)
-    tmp_counts = (
+tmp_counts = (
         df_top.groupby(["PLAYER_ID","bucket"])
               .size()
               .unstack(fill_value=0)
@@ -891,28 +891,28 @@ st.info("The bar chart of average FPTS contributions highlights that points scor
     )
 
     # Colar nomes (merge) e reordenar na ordem do Top 50 (por avg_fp)
-    names_map = per_player_top[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
-    counts = tmp_counts.merge(names_map, on="PLAYER_ID", how="left")
+names_map = per_player_top[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
+counts = tmp_counts.merge(names_map, on="PLAYER_ID", how="left")
 
     # Reordenar pelo ranking do per_player_top
-    order_idx = pd.Index(top50_ids, dtype=int)
-    counts["PLAYER_ID"] = counts["PLAYER_ID"].astype(int)
-    counts = counts.set_index("PLAYER_ID").reindex(order_idx).reset_index()
+order_idx = pd.Index(top50_ids, dtype=int)
+counts["PLAYER_ID"] = counts["PLAYER_ID"].astype(int)
+counts = counts.set_index("PLAYER_ID").reindex(order_idx).reset_index()
 
     # Colocar PLAYER_NAME como primeira coluna
-    counts.insert(0, "PLAYER_NAME", counts.pop("PLAYER_NAME"))
+counts.insert(0, "PLAYER_NAME", counts.pop("PLAYER_NAME"))
 
     # Preencher faltas de nome (raro) com '—'
-    counts["PLAYER_NAME"] = counts["PLAYER_NAME"].fillna("—")
+counts["PLAYER_NAME"] = counts["PLAYER_NAME"].fillna("—")
 
     # Heatmap por coluna (gradiente)
-    heat_cols = labels
-    styled = counts[["PLAYER_NAME"] + heat_cols] \
+heat_cols = labels
+styled = counts[["PLAYER_NAME"] + heat_cols] \
         .style \
         .background_gradient(axis=0, cmap="YlOrRd", subset=heat_cols) \
         .format(na_rep="0")
 
-    st.dataframe(styled, use_container_width=True)
+st.dataframe(styled, use_container_width=True)
     # ====== END PATCHED SECTION ======
 
 # =========================
