@@ -724,7 +724,7 @@ elif page == "Player Insights":
         st.line_chart(merged.rename(columns={"avg_fp":"Weekly average", "max_fp":"Weekly max"}))
 
     st.markdown("---")
-    # Teammate Impact (with vs without) — atualizado com contagem de jogos
+st.subheader("Teammate Impact (with vs without)")
 team_games = df_season_team[df_season_team["GAME_ID"].isin(p_games["GAME_ID"].unique())].copy()
 
 # Teammates (exclui o jogador selecionado)
@@ -796,26 +796,18 @@ elif page == "League Insights":
     df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
     df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
-st.markdown("### Position violin plot (FPTS by position)")
-try:
-    import altair as alt
-    violin = alt.Chart(df_s).transform_density(
-        'fantasy_points',
-        as_=['fantasy_points', 'density'],
-        extent=[df_s['fantasy_points'].min(), df_s['fantasy_points'].max()],
-        groupby=['POS_PRIMARY']
-    ).mark_area(orient='horizontal').encode(
-        y=alt.Y('fantasy_points:Q', title='Fantasy points (per game)'),
-        x=alt.X('density:Q', stack='center', title='Density'),
-        color=alt.Color('POS_PRIMARY:N', legend=alt.Legend(title='Position')),
-        row='POS_PRIMARY:N'
-    ).properties(height=100, width=300)
-    st.altair_chart(violin, use_container_width=True)
-except Exception:
-    st.write("Altair not available, showing simple table sample:")
-    st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
-    st.write("Altair not available, showing simple table sample:")
-    st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
+    st.markdown("### Position boxplot (FPTS by position)")
+    try:
+        import altair as alt
+        bp = alt.Chart(df_s).mark_boxplot(outliers=True).encode(
+            x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
+            y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
+            color=alt.Color("POS_PRIMARY:N", legend=None)
+        )
+        st.altair_chart(bp, use_container_width=True)
+    except Exception:
+        st.write("Altair not available, showing simple table sample:")
+        st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
 
     st.markdown("---")
     st.markdown("### What stats contribute most to FPTS? (season average per game)")
@@ -926,3 +918,44 @@ except Exception:
 # =========================
 # Chat Page (GPT‑3.5) – opcional
 # =========================
+elif page == "Chat":
+    st.title("💬 Fantasy NBA Chat")
+    st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
+
+    if "OPENAI_API_KEY" not in st.session_state:
+        st.session_state["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
+
+    with st.expander("API Key (optional override)"):
+        key_in = st.text_input("OpenAI API Key (stored only for this session)", type="password", value=st.session_state["OPENAI_API_KEY"])
+        if st.button("Use this key for this session"):
+            st.session_state["OPENAI_API_KEY"] = key_in
+            st.success("API key set for this session.")
+
+    if st.session_state["OPENAI_API_KEY"]:
+        openai.api_key = st.session_state["OPENAI_API_KEY"]
+
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask me anything about NBA Fantasy..."):
+        st.session_state["messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role":"system","content":"You are an NBA Fantasy expert assistant."}] + st.session_state["messages"],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                reply = resp.choices[0].message["content"]
+            except Exception as e:
+                reply = f"⚠️ Sorry, I couldn't reach the chat service. Error: {e}\n\nTip: Check your API key and quota."
+            st.markdown(reply)
+            st.session_state["messages"].append({"role": "assistant", "content": reply})
