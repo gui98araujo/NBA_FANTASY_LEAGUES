@@ -327,9 +327,9 @@ if "started" not in st.session_state:
 # Sidebar & Navigation
 # =========================
 page = st.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
-    clear_all_caches()
-    st.session_state["raw_df"] = pd.DataFrame()
-    st.session_state["started"] = False
+clear_all_caches()
+st.session_state["raw_df"] = pd.DataFrame()
+st.session_state["started"] = False
 
 # =========================
 # Setup Page (2020-21+ Regular only)
