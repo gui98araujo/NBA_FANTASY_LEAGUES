@@ -43,22 +43,9 @@ st.markdown(
     .legend-bullet { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle;}
     .legend { font-size: 0.95rem; font-weight: 600; color:#101828; }
     </style>
-<style>
-div[data-testid="stTabs"] {
-    margin-top: -40px;
-}
-div[data-testid="stTabs"] button {
-    font-size: 1.2rem;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
-}
-</style>
     """,
     unsafe_allow_html=True
 )
-
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs(['⚙️ Setup', '🏀 Records', '📊 Player Insights', '📈 League Insights', '💬 Chat'])
 
 # =========================
 # OpenAI (Chat) – opcional
@@ -339,11 +326,18 @@ if "started" not in st.session_state:
 # =========================
 # Sidebar & Navigation
 # =========================
+page = st.sidebar.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
+st.sidebar.write("---")
+if st.sidebar.button("Refresh data (clear cache)"):
+    clear_all_caches()
+    st.session_state["raw_df"] = pd.DataFrame()
+    st.session_state["started"] = False
+    st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
 # =========================
 # Setup Page (2020-21+ Regular only)
 # =========================
-with tab1:
+if page == "Setup":
     st.title("⚙️ Setup")
     st.caption("This app uses Regular Season data only (no Playoffs).")
     st.info("**Data coverage:** Regular Seasons from **2020‑21** to the current season. No Playoffs.")
@@ -431,7 +425,7 @@ with tab1:
 # =========================
 # Records Page
 # =========================
-elwith tab2:
+elif page == "Records":
     st.title("🏀 Records")
     st.caption("Leaderboards by Season, Career, and Game (Regular Season only, 2020‑present).")
 
@@ -564,7 +558,7 @@ elwith tab2:
 # =========================
 # Player Insights Page (Generate Insights button) – league-wide position rank
 # =========================
-elwith tab3:
+elif page == "Player Insights":
     st.title("📊 Player Insights")
     st.caption("Filter by Season, Team and Player. Regular Season only (2020‑present).")
 
@@ -763,7 +757,7 @@ elwith tab3:
 # =========================
 # League Insights Page (season filter only here)
 # =========================
-elwith tab4:
+elif page == "League Insights":
     st.title("📈 League Insights")
     st.caption("Season-wide position analysis and distributions (Regular Season, 2020‑present).")
 
@@ -916,7 +910,7 @@ elwith tab4:
 # =========================
 # Chat Page (GPT‑3.5) – opcional
 # =========================
-elwith tab5:
+elif page == "Chat":
     st.title("💬 Fantasy NBA Chat")
     st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
 
