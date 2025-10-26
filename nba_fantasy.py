@@ -744,25 +744,15 @@ elif page == "Player Insights":
         without_games = games_all.difference(tm_games_present)
 
         avg_with = player_fp_by_game.loc[list(with_games)].mean() if with_games else np.nan
-        games_with = len(with_games)
         avg_without = player_fp_by_game.loc[list(without_games)].mean() if without_games else np.nan
-        games_without = len(without_games)
 
-        results.append({
-            "Teammate": tm_name,
-            "Games With": games_with,
-            "With": avg_with,
-            "Games Without": games_without,
-            "Without": avg_without
-        })
+        results.append({"Teammate": tm_name, "With": avg_with, "Without": avg_without})
 
-impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
-	    # Reorder columns for better visualization
-impact_df = impact_df[["Teammate", "Games With", "With", "Games Without", "Without"]]
-show_df = impact_df.copy()
-for c in ["With","Without"]:
-    show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-st.dataframe(show_df, use_container_width=True)
+    impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
+    show_df = impact_df.copy()
+    for c in ["With","Without"]:
+        show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    st.dataframe(show_df, use_container_width=True)
 
 # =========================
 # League Insights Page (season filter only here)
