@@ -326,13 +326,10 @@ if "started" not in st.session_state:
 # =========================
 # Sidebar & Navigation
 # =========================
-page = st.sidebar.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
-st.sidebar.write("---")
-if st.sidebar.button("Refresh data (clear cache)"):
+page = st.radio("Navigate", ["Setup", "Records", "Player Insights", "League Insights", "Chat"], index=0)
     clear_all_caches()
     st.session_state["raw_df"] = pd.DataFrame()
     st.session_state["started"] = False
-    st.sidebar.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
 # =========================
 # Setup Page (2020-21+ Regular only)
@@ -784,6 +781,7 @@ elif page == "League Insights":
     season_team_ids = tuple(sorted(df_s["TEAM_ID"].dropna().astype(int).unique().tolist()))
     pos_map_df = season_positions_map(sel_season, season_team_ids)
     df_s = df_s.merge(pos_map_df, on="PLAYER_ID", how="left")
+df_s = df_s[df_s["POS_PRIMARY"] != "U"]
     # Fallback letter (if any missing)
     df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
     df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
@@ -791,7 +789,7 @@ elif page == "League Insights":
     st.markdown("### Position boxplot (FPTS by position)")
     try:
         import altair as alt
-        bp = alt.Chart(df_s).mark_boxplot(outliers=True).encode(
+        bp = alt.Chart(df_s).mark_violin().encode(
             x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
             y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
             color=alt.Color("POS_PRIMARY:N", legend=None)
@@ -850,10 +848,19 @@ elif page == "League Insights":
     top50_100 = count_pos_in_range(per_player, 50, 100)
     top100_150 = count_pos_in_range(per_player, 100, 150)
     dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
-    dist = dist.reindex(["G","F","C","U"]).fillna(0).astype(int)
+    dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)
 
     st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
 
+
+# === Analytical Insights ===
+st.markdown("### Insights")
+
+st.markdown("#### Violin Plot Insight")
+st.info("The violin plot reveals the distribution of fantasy points across player positions. Guards (G) tend to have a wider spread and higher median FPTS, indicating variability and potential for high performance. Forwards (F) and Centers (C) show more consistent distributions, with Centers generally having slightly higher median FPTS.")
+
+st.markdown("#### FPTS Contribution Insight")
+st.info("The bar chart of average FPTS contributions highlights that points scored (PTS), assists (AST), and rebounds (OREB/DREB) are the most significant contributors to fantasy points. Turnovers (TOV) and missed 3-pointers negatively impact FPTS, emphasizing the importance of efficiency.")
     st.markdown("---")
     st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
 
