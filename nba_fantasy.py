@@ -17,6 +17,16 @@ from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo, commonteamr
 # Page Config + Light Theme (white bg, black text)
 # =========================
 st.set_page_config(page_title="Fantasy NBA App", page_icon="🏀", layout="wide")
+
+<style>
+.stApp {
+    font-size: 18px !important;
+}
+h1, h2, h3, h4, h5, h6 {
+    font-size: 24px !important;
+}
+</style>
+
 st.markdown(
     """
     <style>
@@ -327,12 +337,6 @@ if "started" not in st.session_state:
 # Sidebar & Navigation
 # =========================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Setup", "🏀 Records", "📊 Player Insights", "📈 League Insights", "💬 Chat"])
-with st.sidebar:
-    if st.button("Refresh data (clear cache)"):
-        clear_all_caches()
-        st.session_state["raw_df"] = pd.DataFrame()
-        st.session_state["started"] = False
-        st.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
 # =========================
 # Setup Page (2020-21+ Regular only)
