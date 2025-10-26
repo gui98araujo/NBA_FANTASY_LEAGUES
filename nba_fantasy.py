@@ -323,23 +323,18 @@ if "raw_df" not in st.session_state:
 if "started" not in st.session_state:
     st.session_state["started"] = False
 
-
 # =========================
-# Top Navigation Tabs
+# Sidebar & Navigation
 # =========================
-st.markdown("""
-<style>
-/* Move tabs closer to top and increase font size */
-div[data-testid="stTabs"] button {
-    font-size: 1.2rem;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
-}
-</style>
-""", unsafe_allow_html=True)
-
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Setup", "🏀 Records", "📊 Player Insights", "📈 League Insights", "💬 Chat"])
+with st.sidebar:
+    if st.button("Refresh data (clear cache)"):
+        clear_all_caches()
+        st.session_state["raw_df"] = pd.DataFrame()
+        st.session_state["started"] = False
+        st.success("Cache cleared. Go to Setup and click 'Let's Start' again.")
 
+# =========================
 # Setup Page (2020-21+ Regular only)
 # =========================
 with tab1:
@@ -430,7 +425,7 @@ with tab1:
 # =========================
 # Records Page
 # =========================
-elwith tab2:
+with tab2:
     st.title("🏀 Records")
     st.caption("Leaderboards by Season, Career, and Game (Regular Season only, 2020‑present).")
 
@@ -563,7 +558,7 @@ elwith tab2:
 # =========================
 # Player Insights Page (Generate Insights button) – league-wide position rank
 # =========================
-elwith tab3:
+with tab3:
     st.title("📊 Player Insights")
     st.caption("Filter by Season, Team and Player. Regular Season only (2020‑present).")
 
@@ -762,7 +757,7 @@ elwith tab3:
 # =========================
 # League Insights Page (season filter only here)
 # =========================
-elwith tab4:
+with tab4:
     st.title("📈 League Insights")
     st.caption("Season-wide position analysis and distributions (Regular Season, 2020‑present).")
 
@@ -915,7 +910,7 @@ elwith tab4:
 # =========================
 # Chat Page (GPT‑3.5) – opcional
 # =========================
-elwith tab5:
+with tab5:
     st.title("💬 Fantasy NBA Chat")
     st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
 
