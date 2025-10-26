@@ -787,20 +787,21 @@ df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
 df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
 st.markdown("### Position boxplot (FPTS by position)")
-    try:
-        import altair as alt
-        bp = alt.Chart(df_s).mark_violin().encode(
-            x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
-            y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
-            color=alt.Color("POS_PRIMARY:N", legend=None)
-        )
-        st.altair_chart(bp, use_container_width=True)
-    except Exception:
-        st.write("Altair not available, showing simple table sample:")
-        st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
+try:
+    import altair as alt
+    bp = alt.Chart(df_s).mark_violin().encode(
+        x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
+        y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
+        color=alt.Color("POS_PRIMARY:N", legend=None)
+        
+    )
+    st.altair_chart(bp, use_container_width=True)
+except Exception:
+    st.write("Altair not available, showing simple table sample:")
+    st.dataframe(df_s[["PLAYER_NAME","POS_PRIMARY","fantasy_points"]].head(30))
 
-    st.markdown("---")
-    st.markdown("### What stats contribute most to FPTS? (season average per game)")
+st.markdown("---")
+st.markdown("### What stats contribute most to FPTS? (season average per game)")
 
     # Build per-row contributions (base categories only, bonuses excluded)
     s = st.session_state["scoring"]
