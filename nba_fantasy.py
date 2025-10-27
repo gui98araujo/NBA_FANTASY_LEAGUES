@@ -83,7 +83,7 @@ def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
     return team, opp, is_home
 
 # =========================
-# Data Fetch (cached per season) – Regular Season only (2020+)
+# Data Fetch (cached per season) — Regular Season only (2020+)
 # =========================
 @st.cache_data(show_spinner=False, persist=True)
 def fetch_one_season_regular(season_label: str, timeout_s: int = 10) -> pd.DataFrame:
@@ -254,16 +254,6 @@ def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, float | bool]) -
     )
     out["fantasy_points"] = fp.astype(float)
 
-    # Store component contributions for ranking
-    out["fpts_from_pts"] = s["points"] * out["PTS"].fillna(0)
-    out["fpts_from_ast"] = s["assist"] * out["AST"].fillna(0)
-    out["fpts_from_stl"] = s["steal"] * out["STL"].fillna(0)
-    out["fpts_from_blk"] = s["block"] * out["BLK"].fillna(0)
-    out["fpts_from_oreb"] = s["oreb"] * out["OREB"].fillna(0)
-    out["fpts_from_dreb"] = s["dreb"] * out["DREB"].fillna(0)
-    out["fpts_loss_tov"] = s["turnover"] * out["TOV"].fillna(0)
-    out["fpts_loss_foul"] = s["tech_foul"] * out[tech_col].fillna(0) + s["flagrant_foul"] * out[flag_col].fillna(0)
-
     for c in ["_ft_missed","_fg3_missed","_b40","_b50","_b15_ast","_b20_reb","_is_dd","_is_td","_dd_points","__TECH__","__FLAG__"]:
         if c in out.columns:
             out.drop(columns=[c], inplace=True)
@@ -350,7 +340,7 @@ if st.sidebar.button("Refresh data (clear cache)"):
 if page == "Setup":
     st.title("⚙️ Setup")
     st.caption("This app uses Regular Season data only (no Playoffs).")
-    st.info("**Data coverage:** Regular Seasons from **2020–21** to the current season. No Playoffs.")
+    st.info("**Data coverage:** Regular Seasons from **2020‑21** to the current season. No Playoffs.")
 
     # Scoring settings
     s = st.session_state["scoring"]
@@ -392,9 +382,9 @@ if page == "Setup":
             st.success("Settings saved.")
 
     st.markdown("---")
-    st.subheader("Load Data (2020–21 → current, Regular Season only)")
+    st.subheader("Load Data (2020‑21 → current, Regular Season only)")
     if st.button("Let's Start"):
-        with st.spinner("Downloading player game logs (2020–21 to current)..."):
+        with st.spinner("Downloading player game logs (2020‑21 to current)..."):
             raw, failures = load_regular_2020_to_current(max_workers=6, timeout_s=10)
 
         if raw.empty:
@@ -437,7 +427,7 @@ if page == "Setup":
 # =========================
 elif page == "Records":
     st.title("🏀 Records")
-    st.caption("Leaderboards by Season, Career, and Game (Regular Season only, 2020–present).")
+    st.caption("Leaderboards by Season, Career, and Game (Regular Season only, 2020‑present).")
 
     if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
         st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
@@ -526,7 +516,7 @@ elif page == "Records":
 
     # Career Records
     with tab2:
-        st.subheader("Career Records (in 2020–present window)")
+        st.subheader("Career Records (in 2020‑present window)")
         career_totals = (
             df_f.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False)
                 .agg(Fantasy_Points=("fantasy_points","sum"))
@@ -566,11 +556,101 @@ elif page == "Records":
         render_table(out.drop(columns=["PLAYER_ID"]))
 
 # =========================
-# Player Insights Page (Generate Insights button) – league-wide position rank + new KPIs
+# Player Insights Page (Generate Insights button) – league-wide position rank
+
+# Add Games With and Games Without columns
+results.append({
+    "Teammate": tm_name,
+    "With": avg_with,
+    "Without": avg_without,
+    "Games With": len(with_games),
+    "Games Without": len(without_games)
+})
+
+# Additional KPIs for fantasy point contributions
+avg_pts_fp = (s["points"] * p_games["PTS"]).mean()
+avg_oreb_fp = (s["oreb"] * p_games["OREB"]).mean()
+avg_dreb_fp = (s["dreb"] * p_games["DREB"]).mean()
+avg_blk_fp = (s["block"] * p_games["BLK"]).mean()
+avg_stl_fp = (s["steal"] * p_games["STL"]).mean()
+avg_ast_fp = (s["assist"] * p_games["AST"]).mean()
+avg_to_fp = (s["turnover"] * p_games["TOV"]).mean()
+avg_foul_fp = s["tech_foul"] * p_games.get("TECH", 0).mean() + s["flagrant_foul"] * p_games.get("FLAGRANT", 0).mean()
+
+# Display additional KPIs
+k5, k6, k7, k8 = st.columns(4)
+with k5:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS from PTS</div>
+    <div class="kpi-value">{avg_pts_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+with k6:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS from OREB</div>
+    <div class="kpi-value">{avg_oreb_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+with k7:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS from DREB</div>
+    <div class="kpi-value">{avg_dreb_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+with k8:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS from BLK</div>
+    <div class="kpi-value">{avg_blk_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+k9, k10, k11, k12 = st.columns(4)
+with k9:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS from STL</div>
+    <div class="kpi-value">{avg_stl_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+with k10:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS from AST</div>
+    <div class="kpi-value">{avg_ast_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+with k11:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS lost by TO</div>
+    <div class="kpi-value">{avg_to_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+with k12:
+    st.markdown(f"""
+    <div class="kpi-card">
+    <div class="kpi-title">FPTS lost by FOUL</div>
+    <div class="kpi-value">{avg_foul_fp:.2f}</div>
+    <div class="kpi-sub">avg per game</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 # =========================
 elif page == "Player Insights":
     st.title("📊 Player Insights")
-    st.caption("Filter by Season, Team and Player. Regular Season only (2020–present).")
+    st.caption("Filter by Season, Team and Player. Regular Season only (2020‑present).")
 
     if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
         st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
@@ -620,7 +700,7 @@ elif page == "Player Insights":
         fallback_pos = get_player_position(sel_player_id)
         pos_map_df = pd.concat([pos_map_df, pd.DataFrame([{"PLAYER_ID": sel_player_id, "POSITION": fallback_pos}])], ignore_index=True)
 
-    # Headshot + position
+    # Headshot + position + KPIs
     colA, colB = st.columns([1, 3])
     with colA:
         st.image(player_headshot_url(sel_player_id), width=220)
@@ -645,15 +725,7 @@ elif page == "Player Insights":
     # League-wide overall & position ranks (by avg_fp in season)
     per_player = df_season.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
         GP=("GAME_ID","nunique"),
-        avg_fp=("fantasy_points","mean"),
-        avg_fpts_pts=("fpts_from_pts","mean"),
-        avg_fpts_ast=("fpts_from_ast","mean"),
-        avg_fpts_stl=("fpts_from_stl","mean"),
-        avg_fpts_blk=("fpts_from_blk","mean"),
-        avg_fpts_oreb=("fpts_from_oreb","mean"),
-        avg_fpts_dreb=("fpts_from_dreb","mean"),
-        avg_loss_tov=("fpts_loss_tov","mean"),
-        avg_loss_foul=("fpts_loss_foul","mean")
+        avg_fp=("fantasy_points","mean")
     )
     # Attach positions from map
     per_player = per_player.merge(pos_map_df, on="PLAYER_ID", how="left")
@@ -673,26 +745,8 @@ elif page == "Player Insights":
     else:
         pos_rank, pos_count = None, None
 
-    # Category-specific ranks
-    def get_rank(df_sorted, pid):
-        if pid in df_sorted["PLAYER_ID"].values:
-            return df_sorted.index[df_sorted["PLAYER_ID"] == pid][0] + 1
-        return None
-    
-    rank_pts = get_rank(per_player.sort_values("avg_fpts_pts", ascending=False).reset_index(drop=True), sel_player_id)
-    rank_ast = get_rank(per_player.sort_values("avg_fpts_ast", ascending=False).reset_index(drop=True), sel_player_id)
-    rank_stl = get_rank(per_player.sort_values("avg_fpts_stl", ascending=False).reset_index(drop=True), sel_player_id)
-    rank_blk = get_rank(per_player.sort_values("avg_fpts_blk", ascending=False).reset_index(drop=True), sel_player_id)
-    rank_oreb = get_rank(per_player.sort_values("avg_fpts_oreb", ascending=False).reset_index(drop=True), sel_player_id)
-    rank_dreb = get_rank(per_player.sort_values("avg_fpts_dreb", ascending=False).reset_index(drop=True), sel_player_id)
-
-    # Get player's avg values
-    player_row = per_player[per_player["PLAYER_ID"] == sel_player_id]
-    avg_loss_tov_val = player_row["avg_loss_tov"].iloc[0] if not player_row.empty else 0.0
-    avg_loss_foul_val = player_row["avg_loss_foul"].iloc[0] if not player_row.empty else 0.0
-
     with colB:
-        # First row: 4 original KPIs
+        # KPI cards (4 lado a lado)
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.markdown(f"""
@@ -724,80 +778,6 @@ elif page == "Player Insights":
                   <div class="kpi-title">Avg Weekly Max</div>
                   <div class="kpi-value">{(0.0 if np.isnan(avg_weekly_max) else float(avg_weekly_max)):.2f}</div>
                   <div class="kpi-sub">mean of weekly best game</div>
-                </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Second row: Category ranks (6 cards)
-        k5, k6, k7, k8, k9, k10 = st.columns(6)
-        with k5:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Rank: FPTS from PTS</div>
-                  <div class="kpi-value">{('#'+str(rank_pts)) if rank_pts else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k6:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Rank: FPTS from AST</div>
-                  <div class="kpi-value">{('#'+str(rank_ast)) if rank_ast else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k7:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Rank: FPTS from STL</div>
-                  <div class="kpi-value">{('#'+str(rank_stl)) if rank_stl else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k8:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Rank: FPTS from BLK</div>
-                  <div class="kpi-value">{('#'+str(rank_blk)) if rank_blk else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k9:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Rank: FPTS from OREB</div>
-                  <div class="kpi-value">{('#'+str(rank_oreb)) if rank_oreb else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k10:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Rank: FPTS from DREB</div>
-                  <div class="kpi-value">{('#'+str(rank_dreb)) if rank_dreb else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide</div>
-                </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Third row: Loss stats (2 cards)
-        k11, k12 = st.columns(2)
-        with k11:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Avg FPTS Loss from TO</div>
-                  <div class="kpi-value">{avg_loss_tov_val:.2f}</div>
-                  <div class="kpi-sub">per game (negative impact)</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k12:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Avg FPTS Loss from Fouls</div>
-                  <div class="kpi-value">{avg_loss_foul_val:.2f}</div>
-                  <div class="kpi-sub">per game (tech + flagrant)</div>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -855,30 +835,48 @@ elif page == "Player Insights":
 
         avg_with = player_fp_by_game.loc[list(with_games)].mean() if with_games else np.nan
         avg_without = player_fp_by_game.loc[list(without_games)].mean() if without_games else np.nan
-        
-        games_with_count = len(with_games)
-        games_without_count = len(without_games)
 
-        results.append({
-            "Teammate": tm_name, 
-            "With": avg_with, 
-            "Games With": games_with_count,
-            "Without": avg_without,
-            "Games Without": games_without_count
-        })
+        results.append({"Teammate": tm_name, "With": avg_with, "Without": avg_without})
 
     impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
     show_df = impact_df.copy()
-    show_df["With"] = show_df["With"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-    show_df["Without"] = show_df["Without"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    for c in ["With","Without"]:
+        show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
     st.dataframe(show_df, use_container_width=True)
 
 # =========================
-# League Insights Page (season filter + defensive tables)
+# League Insights Page (season filter only here)
+
+# Fantasy points allowed by stat per team
+team_defense = df_s.groupby("OPPONENT_ABBREVIATION").agg({
+    "PTS": lambda x: s["points"] * x.mean(),
+    "REB": lambda x: s["oreb"] * x.mean() if "OREB" in df_s.columns else 0 + s["dreb"] * x.mean() if "DREB" in df_s.columns else 0,
+    "AST": lambda x: s["assist"] * x.mean(),
+    "STL": lambda x: s["steal"] * x.mean(),
+    "BLK": lambda x: s["block"] * x.mean(),
+    "TOV": lambda x: s["turnover"] * x.mean()
+}).reset_index().rename(columns={"OPPONENT_ABBREVIATION": "Team"})
+
+# Display sorted tables
+for stat in ["PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+    sorted_df = team_defense[["Team", stat]].sort_values(stat, ascending=False)
+    st.markdown(f"#### Fantasy Points Allowed by {stat}")
+    st.dataframe(sorted_df, use_container_width=True)
+
+# Additional tables for TO and STL losses
+to_loss = df_s.groupby("TEAM_ABBREVIATION")["TOV"].mean().mul(s["turnover"]).reset_index().rename(columns={"TEAM_ABBREVIATION": "Team", "TOV": "Avg FPTS lost by TO"})
+st.markdown("#### Teams causing most FPTS loss by TO")
+st.dataframe(to_loss.sort_values("Avg FPTS lost by TO", ascending=False), use_container_width=True)
+
+stl_gain = df_s.groupby("TEAM_ABBREVIATION")["STL"].mean().mul(s["steal"]).reset_index().rename(columns={"TEAM_ABBREVIATION": "Team", "STL": "Avg FPTS gained by STL"})
+st.markdown("#### Teams causing most FPTS gain by STL")
+st.dataframe(stl_gain.sort_values("Avg FPTS gained by STL", ascending=False), use_container_width=True)
+
+
 # =========================
 elif page == "League Insights":
     st.title("📈 League Insights")
-    st.caption("Season-wide position analysis and distributions (Regular Season, 2020–present).")
+    st.caption("Season-wide position analysis and distributions (Regular Season, 2020‑present).")
 
     if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
         st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
@@ -976,18 +974,23 @@ elif page == "League Insights":
     st.markdown("---")
     st.markdown("### Top 50 – game count by FPTS buckets (heatmap)")
 
+    # ====== PATCHED SECTION (fix KeyError with MultiIndex) ======
+    # Faixas (bins)
     bins = [-1, 20, 25, 30, 35, 40, 45, 50, 1e9]
     labels = ["<20","20-25","25-30","30-35","35-40","40-45","45-50","50+"]
 
+    # Top 50 por média de FPTS na temporada selecionada
     per_player_top = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False) \
                          .agg(avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")) \
                          .sort_values("avg_fp", ascending=False).reset_index(drop=True)
 
     top50_ids = per_player_top.head(50)["PLAYER_ID"].astype(int).tolist()
 
+    # Filtrar jogos desses jogadores
     df_top = df_s[df_s["PLAYER_ID"].astype(int).isin(top50_ids)].copy()
     df_top["bucket"] = pd.cut(df_top["fantasy_points"], bins=bins, labels=labels)
 
+    # Contagem por faixa (somente PLAYER_ID no índice)
     tmp_counts = (
         df_top.groupby(["PLAYER_ID","bucket"])
               .size()
@@ -996,16 +999,22 @@ elif page == "League Insights":
               .reset_index()
     )
 
+    # Colar nomes (merge) e reordenar na ordem do Top 50 (por avg_fp)
     names_map = per_player_top[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates()
     counts = tmp_counts.merge(names_map, on="PLAYER_ID", how="left")
 
+    # Reordenar pelo ranking do per_player_top
     order_idx = pd.Index(top50_ids, dtype=int)
     counts["PLAYER_ID"] = counts["PLAYER_ID"].astype(int)
     counts = counts.set_index("PLAYER_ID").reindex(order_idx).reset_index()
 
+    # Colocar PLAYER_NAME como primeira coluna
     counts.insert(0, "PLAYER_NAME", counts.pop("PLAYER_NAME"))
+
+    # Preencher faltas de nome (raro) com '—'
     counts["PLAYER_NAME"] = counts["PLAYER_NAME"].fillna("—")
 
+    # Heatmap por coluna (gradiente)
     heat_cols = labels
     styled = counts[["PLAYER_NAME"] + heat_cols] \
         .style \
@@ -1013,21 +1022,49 @@ elif page == "League Insights":
         .format(na_rep="0")
 
     st.dataframe(styled, use_container_width=True)
+    # ====== END PATCHED SECTION ======
 
-    st.markdown("---")
-    st.markdown("### Defensive Analysis: FPTS Allowed by Team")
-    st.caption("Which teams allow the most fantasy points to opponents in each category?")
+# =========================
+# Chat Page (GPT‑3.5) – opcional
+# =========================
+elif page == "Chat":
+    st.title("💬 Fantasy NBA Chat")
+    st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
 
-    # Calculate FPTS allowed by opponent
-    # For each game, we need to aggregate stats BY OPPONENT
-    def calc_defense_table(df_input, stat_col, fpts_col, label):
-        """Calculate average FPTS allowed per game by opponent team"""
-        # Group by opponent and game, then average
-        opp_stats = df_input.groupby(["OPPONENT_ABBREVIATION", "GAME_ID"]).agg({
-            fpts_col: "sum"
-        }).reset_index()
-        
-        # Average per game by opponent
-        avg_by_opp = opp_stats.groupby("OPPONENT_ABBREVIATION").agg({
-            fpts_col: "mean"
-        }).reset_index()
+    if "OPENAI_API_KEY" not in st.session_state:
+        st.session_state["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
+
+    with st.expander("API Key (optional override)"):
+        key_in = st.text_input("OpenAI API Key (stored only for this session)", type="password", value=st.session_state["OPENAI_API_KEY"])
+        if st.button("Use this key for this session"):
+            st.session_state["OPENAI_API_KEY"] = key_in
+            st.success("API key set for this session.")
+
+    if st.session_state["OPENAI_API_KEY"]:
+        openai.api_key = st.session_state["OPENAI_API_KEY"]
+
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask me anything about NBA Fantasy..."):
+        st.session_state["messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role":"system","content":"You are an NBA Fantasy expert assistant."}] + st.session_state["messages"],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                reply = resp.choices[0].message["content"]
+            except Exception as e:
+                reply = f"⚠️ Sorry, I couldn't reach the chat service. Error: {e}\n\nTip: Check your API key and quota."
+            st.markdown(reply)
+            st.session_state["messages"].append({"role": "assistant", "content": reply})
