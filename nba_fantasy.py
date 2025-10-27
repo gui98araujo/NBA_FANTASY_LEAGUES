@@ -1,934 +1,793 @@
-# app.py
-# -*- coding: utf-8 -*-
-import time
-import random
-from datetime import datetime
-from typing import List, Dict, Optional, Iterable, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import numpy as np
-import pandas as pd
 import streamlit as st
-import openai
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime
+import json
+import os
+from typing import Dict, List, Optional
 
-from nba_api.stats.endpoints import leaguegamelog, commonplayerinfo, commonteamroster
-
-# =========================
-# Page Config + Light Theme (white bg, black text)
-# =========================
-st.set_page_config(page_title="Fantasy NBA App", page_icon="🏀", layout="wide")
-st.markdown(
-    """
-    <style>
-    .stApp { background-color: #FFFFFF; color: #000000; }
-    h1,h2,h3,h4,h5,h6,label,p,span,div,code { color: #000000 !important; }
-    .stButton>button, .stDownloadButton>button {
-        background-color: #0057FF !important; color: #FFFFFF !important; border: 0; border-radius: 6px;
-        padding: 0.5rem 1rem; font-weight: 600;
-    }
-    .stButton>button:hover, .stDownloadButton>button:hover { background-color: #0043C6 !important; }
-    section[data-testid="stSidebar"] { background-color: #F7F9FC !important; color: #000000 !important; }
-    .stDataFrame table, .stDataFrame thead tr th, .stDataFrame tbody tr td {
-        color: #000000 !important; background-color: #FFFFFF !important;
-    }
-    /* KPI cards */
-    .kpi-card {
-        border: 1px solid #e6e8eb; border-radius: 10px; padding: 14px 16px; background: #fff;
-        box-shadow: 0 1px 3px rgba(16,24,40,0.06);
-    }
-    .kpi-title { font-size: 0.9rem; color: #475467; margin-bottom: 6px; }
-    .kpi-value { font-size: 1.6rem; font-weight: 700; color: #101828; }
-    .kpi-sub { font-size: 0.85rem; color: #667085; }
-    /* Colored legend bullets */
-    .legend-bullet { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle;}
-    .legend { font-size: 0.95rem; font-weight: 600; color:#101828; }
-    </style>
-    """,
-    unsafe_allow_html=True
+# Configuração da página
+st.set_page_config(
+    page_title="NFL Fantasy Analytics",
+    page_icon="🏈",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# =========================
-# OpenAI (Chat) – opcional
-# =========================
-# st.secrets.get("OPENAI_API_KEY", "") deve ser usado dentro de um bloco try/except
-# ou verificado se a chave existe antes de atribuir, mas para fins de correção
-# de erro de sintaxe, vamos manter a linha e assumir que st.secrets está configurado.
-openai.api_key = st.secrets.get("OPENAI_API_KEY", "")
-
-# =========================
-# Helpers: Seasons
-# =========================
-EARLIEST_SEASON_START = 2020  # 2020-21 and forward (Regular Season only)
-
-def season_label_from_start_year(start_year: int) -> str:
-    """2005 -> '2005-06'"""
-    return f"{start_year}-{str((start_year + 1) % 100).zfill(2)}"
-
-def infer_current_season_label(today: Optional[datetime] = None) -> str:
-    dt = today or datetime.today()
-    start_year = dt.year if dt.month >= 10 else dt.year - 1
-    return season_label_from_start_year(start_year)
-
-def seasons_from_2020() -> List[str]:
-    last = infer_current_season_label()
-    last_start_year = int(last[:4])
-    return [season_label_from_start_year(y) for y in range(EARLIEST_SEASON_START, last_start_year + 1)]
-
-def parse_opponent_from_matchup(matchup: str) -> Tuple[str, str, bool]:
-    """
-    'DEN vs LAL' (home) or 'DEN @ LAL' (away) -> (team, opp, is_home)
-    """
-    parts = str(matchup).split()
-    if len(parts) != 3:
-        return ("", "", False)
-    team, sep, opp = parts
-    is_home = (sep.lower() == "vs")
-    return team, opp, is_home
-
-# =========================
-# Data Fetch (cached per season) — Regular Season only (2020+)
-# =========================
-# st.cache_data é a forma correta no Streamlit moderno
-@st.cache_data(show_spinner=False, persist=True)
-def fetch_one_season_regular(season_label: str, timeout_s: int = 10) -> pd.DataFrame:
-    """
-    Download player game logs for one season (Regular Season only).
-    Cached to avoid re-download.
-    """
-    try:
-        r = leaguegamelog.LeagueGameLog(
-            season=season_label,
-            season_type_all_star="Regular Season",
-            player_or_team_abbreviation="P",
-            timeout=timeout_s,
-        )
-        df = r.get_data_frames()[0].copy()
-        df["SEASON"] = season_label
-        df["SEASON_TYPE"] = "Regular Season"
-        if "GAME_DATE" in df.columns:
-            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
-        if "MATCHUP" in df.columns:
-            parsed = df["MATCHUP"].apply(parse_opponent_from_matchup)
-            df["TEAM_ABBREV_FROM_MATCHUP"] = parsed.apply(lambda x: x[0])
-            df["OPPONENT_ABBREVIATION"] = parsed.apply(lambda x: x[1])
-            df["IS_HOME"] = parsed.apply(lambda x: x[2])
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-def load_regular_2020_to_current(
-    max_workers: int = 6,
-    timeout_s: int = 10,
-) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
-    """
-    Downloads all seasons from 2020-21 to current (Regular Season only) with parallelism.
-    Returns (big_df, failures_list[ (season, status) ]).
-    """
-    seasons = seasons_from_2020()
-    total = len(seasons)
-    progress = st.progress(0, text=f"Loading data... (0/{total})")
-    parts: List[pd.DataFrame] = []
-    failures: List[Tuple[str, str]] = []
-    completed = 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(fetch_one_season_regular, s, timeout_s): s for s in seasons}
-        for fut in as_completed(futures):
-            s = futures[fut]
-            try:
-                df = fut.result()
-                if df is not None and not df.empty:
-                    parts.append(df)
-                else:
-                    failures.append((s, "empty or failed"))
-            except Exception as e:
-                failures.append((s, str(e)))
-            completed += 1
-            progress.progress(min(1.0, completed / total), text=f"Loading data... ({completed}/{total})")
-
-    progress.empty()
-    if parts:
-        big = pd.concat(parts, ignore_index=True)
-        sort_cols = [c for c in ["GAME_DATE", "GAME_ID", "PLAYER_ID"] if c in big.columns]
-        if sort_cols:
-            big = big.sort_values(sort_cols).reset_index(drop=True)
-    else:
-        big = pd.DataFrame()
-
-    return big, failures
-
-# O decorador @st.cache_data deve ser adicionado às funções season_positions_map e get_player_position
-# para que a função clear_all_caches funcione corretamente.
-# Além disso, as funções precisam ser definidas antes de serem referenciadas em clear_all_caches.
-# Como o código original não as definiu antes, vamos movê-las para cima.
-
-# =========================
-# Player Position Helpers (cached)
-# =========================
-
-def primary_position_letter(pos: str) -> str:
-    """C, F, G, N/A -> C, F, G, N/A"""
-    pos = str(pos).upper()
-    if "C" in pos: return "C"
-    if "F" in pos: return "F"
-    if "G" in pos: return "G"
-    return "N/A"
-
-@st.cache_data(show_spinner=False, persist=True)
-def season_positions_map(season_label: str, team_ids: Iterable[int]) -> pd.DataFrame:
-    """
-    Download positions for all players in a season by querying team rosters.
-    Returns a DataFrame with PLAYER_ID and POSITION.
-    """
-    parts = []
-    for team_id in team_ids:
-        try:
-            r = commonteamroster.CommonTeamRoster(team_id=team_id, season=season_label)
-            df = r.get_data_frames()[0]
-            parts.append(df[["PLAYER_ID", "POSITION"]])
-        except Exception:
-            pass
-    
-    if parts:
-        combined = pd.concat(parts, ignore_index=True).drop_duplicates("PLAYER_ID")
-        # Trata casos onde a posição é "G-F" ou "F-C"
-        combined["POSITION"] = combined["POSITION"].apply(primary_position_letter)
-        return combined
-    return pd.DataFrame(columns=["PLAYER_ID", "POSITION"])
-
-@st.cache_data(show_spinner=False, persist=True)
-def get_player_position(player_id: int) -> str:
-    """
-    Download position for a single player as a fallback.
-    """
-    try:
-        r = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
-        df = r.get_data_frames()[0]
-        if not df.empty and "POSITION" in df.columns:
-            pos = df["POSITION"].iloc[0]
-            return primary_position_letter(pos)
-    except Exception:
-        pass
-    return "N/A"
-
-def clear_all_caches():
-    fetch_one_season_regular.clear()
-    # Uso de st.cache_data.clear() é o método correto
-    season_positions_map.clear()
-    get_player_position.clear()
-
-# =========================
-# Fantasy Scoring (full rules)
-# =========================
-# A anotação de tipo Dict[str, float | bool] é válida para Python 3.10+, 
-# mas se o ambiente for mais antigo, pode dar erro. 
-# Usaremos Union para maior compatibilidade.
-from typing import Union
-DEFAULT_SCORING: Dict[str, Union[float, bool]] = {
-    # base events
-    "points": 0.7,
-    "assist": 1.1,
-    "steal": 2.2,
-    "block": 2.0,
-    "turnover": -1.0,
-    "ft_missed": -0.1,
-    "three_made": 0.7,
-    "three_missed": -0.2,
-    "oreb": 1.2,
-    "dreb": 0.95,
-    "tech_foul": -1.0,
-    "flagrant_foul": -2.0,
-    # bonuses
-    "double_double": 2.0,
-    "triple_double": 3.0,
-    "bonus_40": 2.0,
-    "bonus_50": 2.0,
-    "bonus_15_ast": 2.0,
-    "bonus_20_reb": 2.0,
-    # stacking
-    "stack_dd_td": True,
-    "stack_40_50": True,
-}
-
-TECH_CANDIDATES = ["TECH", "TECH_FOULS", "TECHNICALS", "TECHNICAL_FOUL", "TF"]
-FLAGRANT_CANDIDATES = ["FLAGRANT", "FLAGRANT_FOULS", "FLAGRANT1", "FLAGRANT2", "FF"]
-
-def compute_fantasy_points(df: pd.DataFrame, scoring: Dict[str, Union[float, bool]]) -> pd.DataFrame:
-    # A função de type hint deve ser corrigida para Union[float, bool]
-    s = {**DEFAULT_SCORING, **(scoring or {})}
-    out = df.copy()
-
-    def ensure(col, default=0):
-        if col not in out.columns:
-            out[col] = default
-
-    for c in ["PTS", "AST", "STL", "BLK", "TOV", "FG3M", "FG3A", "FTM", "FTA", "OREB", "DREB"]:
-        ensure(c, 0)
-    if "REB" not in out.columns:
-        out["REB"] = out["OREB"].fillna(0) + out["DREB"].fillna(0)
-
-    tech_col = next((c for c in TECH_CANDIDATES if c in out.columns), None)
-    flag_col = next((c for c in FLAGRANT_CANDIDATES if c in out.columns), None)
-    if tech_col is None:
-        out["__TECH__"] = 0
-        tech_col = "__TECH__"
-    if flag_col is None:
-        out["__FLAG__"] = 0
-        flag_col = "__FLAG__"
-
-    out["_ft_missed"] = (out["FTA"].fillna(0) - out["FTM"].fillna(0)).clip(lower=0)
-    out["_fg3_missed"] = (out["FG3A"].fillna(0) - out["FG3M"].fillna(0)).clip(lower=0)
-
-    # Lógica de bônus de pontos (40/50)
-    if s.get("stack_40_50", True):
-        # Se stack_40_50 é True, 40+ e 50+ acumulam
-        out["_b40"] = np.where((out["PTS"] >= 40) & (out["PTS"] < 50), s["bonus_40"], 0.0)
-        # O bônus de 50 já inclui o de 40 na soma final, mas a lógica original estava
-        # aplicando o bônus de 40 para 40+ e o de 50 para 50+. 
-        # Vou manter a lógica original, mas a correção para "stack_40_50":
-        # Se True, o bônus de 40 é para 40-49 e o de 50 é para 50+.
-        # Se False, o bônus de 40 é para 40-49 e o de 50 é para 50+. 
-        # A diferença é que, se True, o bônus de 50 é somado ao de 40.
-        # A lógica original (linhas 221-222) era:
-        # out["_b40"] = np.where(out["PTS"] >= 40, s["bonus_40"], 0.0)
-        # out["_b50"] = np.where(out["PTS"] >= 50, s["bonus_50"], 0.0)
-        # Isso significa que um jogador com 50+ pontos ganha bônus de 40 E 50.
-        # Vou restaurar a lógica original para "stack_40_50": True.
-        out["_b40"] = np.where(out["PTS"] >= 40, s["bonus_40"], 0.0)
-        out["_b50"] = np.where(out["PTS"] >= 50, s["bonus_50"], 0.0)
-    else:
-        # Se stack_40_50 é False, bônus de 40 é para 40-49 e bônus de 50 é para 50+ (mutuamente exclusivos)
-        out["_b40"] = np.where((out["PTS"] >= 40) & (out["PTS"] < 50), s["bonus_40"], 0.0)
-        out["_b50"] = np.where(out["PTS"] >= 50, s["bonus_50"], 0.0)
-        # A lógica original para False (linhas 224-225) já estava correta para exclusividade.
-
-    out["_b15_ast"] = np.where(out["AST"] >= 15, s["bonus_15_ast"], 0.0)
-    out["_b20_reb"] = np.where(out["REB"] >= 20, s["bonus_20_reb"], 0.0)
-
-    cats = [out["PTS"].fillna(0), out["REB"].fillna(0), out["AST"].fillna(0), out["STL"].fillna(0), out["BLK"].fillna(0)]
-    # A linha abaixo estava incorreta na lógica de contagem de DD/TD. 
-    # O correto é somar os booleanos (True=1, False=0)
-    # dd_count = sum(cat >= 10 for cat in cats)
-    # A correção é:
-    dd_count = sum((cat >= 10).astype(int) for cat in cats)
-    
-    out["_is_dd"] = (dd_count >= 2).astype(int)
-    out["_is_td"] = (dd_count >= 3).astype(int)
-    
-    if bool(s.get("stack_dd_td", True)):
-        out["_dd_points"] = out["_is_dd"] * s["double_double"] + out["_is_td"] * s["triple_double"]
-    else:
-        out["_dd_points"] = np.where(out["_is_td"] == 1, s["triple_double"],
-                                     np.where(out["_is_dd"] == 1, s["double_double"], 0.0))
-
-    fp = (
-        s["points"] * out["PTS"].fillna(0)
-        + s["assist"] * out["AST"].fillna(0)
-        + s["steal"] * out["STL"].fillna(0)
-        + s["block"] * out["BLK"].fillna(0)
-        + s["turnover"] * out["TOV"].fillna(0)
-        + s["ft_missed"] * out["_ft_missed"]
-        + s["three_made"] * out["FG3M"].fillna(0)
-        + s["three_missed"] * out["_fg3_missed"]
-        + s["oreb"] * out["OREB"].fillna(0)
-        + s["dreb"] * out["DREB"].fillna(0)
-        + s["tech_foul"] * out[tech_col].fillna(0)
-        + s["flagrant_foul"] * out[flag_col].fillna(0)
-        + out["_b40"] + out["_b50"] + out["_b15_ast"] + out["_b20_reb"] + out["_dd_points"]
-    )
-    out["fantasy_points"] = fp.astype(float)
-
-    for c in ["_ft_missed","_fg3_missed","_b40","_b50","_b15_ast","_b20_reb","_is_dd","_is_td","_dd_points","__TECH__","__FLAG__"]:
-        if c in out.columns:
-            out.drop(columns=[c], inplace=True)
-    return out
-
-# =========================
-# Images & misc helpers
-# =========================
-def player_headshot_url(player_id: int) -> str:
-    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{int(player_id)}.png"
-
-def teams_from_df(df: pd.DataFrame) -> List[str]:
-    cols = [c for c in ["TEAM_ABBREVIATION", "TEAM_ABBREV_FROM_MATCHUP"] if c in df.columns]
-    if not cols:
-        return []
-    vals = set()
-    for c in cols:
-        vals.update(df[c].dropna().unique().tolist())
-    return sorted(list(vals))
-
-# =========================
-# Main App Logic
-# =========================
-
-def render_table(df: pd.DataFrame):
-    """Render a DataFrame with image column using st.column_config"""
-    
-    # Verifica se a coluna 'Photo' existe e cria a configuração
-    if "Photo" in df.columns:
-        column_config = {
-            "Photo": st.column_config.ImageColumn("Photo", help="Player Headshot"),
-            "Fantasy Points": st.column_config.NumberColumn("Fantasy Points", format="%.2f"),
-        }
-    else:
-        column_config = {
-            "Fantasy Points": st.column_config.NumberColumn("Fantasy Points", format="%.2f"),
-        }
-        
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-    )
-
-def add_photo_and_name(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds 'Photo' and 'Player' columns to a DataFrame with PLAYER_ID and PLAYER_NAME."""
-    out = df.copy()
-    if "PLAYER_ID" in out.columns:
-        out["Photo"] = out["PLAYER_ID"].apply(player_headshot_url)
-    if "PLAYER_NAME" in out.columns:
-        out["Player"] = out["PLAYER_NAME"]
-    return out
-
-# =========================
-# Streamlit App Pages
-# =========================
-
-# Inicialização de estado e dados
-if "started" not in st.session_state:
-    st.session_state["started"] = False
-if "raw_df" not in st.session_state:
-    st.session_state["raw_df"] = pd.DataFrame()
-if "scoring" not in st.session_state:
-    st.session_state["scoring"] = DEFAULT_SCORING
-
-# Sidebar para navegação
-st.sidebar.title("Fantasy NBA App")
-pages = ["Setup", "Leaderboard", "Player Insights"]
-page = st.sidebar.radio("Go to", pages)
-
-# =========================
-# Setup Page
-# =========================
-if page == "Setup":
-    st.title("⚙️ Setup")
-    st.markdown("Load NBA data from 2020-21 season to the current season.")
-    
-    # Configuração de pontuação
-    st.subheader("Fantasy Scoring Rules")
-    
-    # Usando st.expander para organizar as regras
-    with st.expander("Base Events", expanded=True):
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.session_state["scoring"]["points"] = st.number_input("Points (PTS)", value=DEFAULT_SCORING["points"], step=0.1)
-            st.session_state["scoring"]["assist"] = st.number_input("Assists (AST)", value=DEFAULT_SCORING["assist"], step=0.1)
-            st.session_state["scoring"]["steal"] = st.number_input("Steals (STL)", value=DEFAULT_SCORING["steal"], step=0.1)
-        with col2:
-            st.session_state["scoring"]["block"] = st.number_input("Blocks (BLK)", value=DEFAULT_SCORING["block"], step=0.1)
-            st.session_state["scoring"]["turnover"] = st.number_input("Turnovers (TOV)", value=DEFAULT_SCORING["turnover"], step=0.1)
-            st.session_state["scoring"]["oreb"] = st.number_input("Off. Rebounds (OREB)", value=DEFAULT_SCORING["oreb"], step=0.1)
-        with col3:
-            st.session_state["scoring"]["dreb"] = st.number_input("Def. Rebounds (DREB)", value=DEFAULT_SCORING["dreb"], step=0.1)
-            st.session_state["scoring"]["three_made"] = st.number_input("3PM", value=DEFAULT_SCORING["three_made"], step=0.1)
-            st.session_state["scoring"]["three_missed"] = st.number_input("3PA-3PM", value=DEFAULT_SCORING["three_missed"], step=0.1)
-        with col4:
-            st.session_state["scoring"]["ft_missed"] = st.number_input("FTA-FTM", value=DEFAULT_SCORING["ft_missed"], step=0.1)
-            st.session_state["scoring"]["tech_foul"] = st.number_input("Tech Foul", value=DEFAULT_SCORING["tech_foul"], step=0.1)
-            st.session_state["scoring"]["flagrant_foul"] = st.number_input("Flagrant Foul", value=DEFAULT_SCORING["flagrant_foul"], step=0.1)
-
-    with st.expander("Bonuses", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.session_state["scoring"]["double_double"] = st.number_input("Double-Double", value=DEFAULT_SCORING["double_double"], step=0.1)
-            st.session_state["scoring"]["triple_double"] = st.number_input("Triple-Double", value=DEFAULT_SCORING["triple_double"], step=0.1)
-            st.session_state["scoring"]["stack_dd_td"] = st.checkbox("Stack DD/TD (TD gets both)", value=DEFAULT_SCORING["stack_dd_td"])
-        with col2:
-            st.session_state["scoring"]["bonus_40"] = st.number_input("40+ Points Bonus", value=DEFAULT_SCORING["bonus_40"], step=0.1)
-            st.session_state["scoring"]["bonus_50"] = st.number_input("50+ Points Bonus", value=DEFAULT_SCORING["bonus_50"], step=0.1)
-            st.session_state["scoring"]["stack_40_50"] = st.checkbox("Stack 40/50 (50+ gets both)", value=DEFAULT_SCORING["stack_40_50"])
-        with col3:
-            st.session_state["scoring"]["bonus_15_ast"] = st.number_input("15+ Assists Bonus", value=DEFAULT_SCORING["bonus_15_ast"], step=0.1)
-            st.session_state["scoring"]["bonus_20_reb"] = st.number_input("20+ Rebounds Bonus", value=DEFAULT_SCORING["bonus_20_reb"], step=0.1)
-
-    st.markdown("---")
-
-    # Botões de ação
-    col_start, col_clear = st.columns([1, 1])
-    with col_start:
-        if st.button("Let's Start", type="primary"):
-            st.session_state["started"] = False
-            st.session_state["raw_df"] = pd.DataFrame()
-            
-            with st.spinner("Loading NBA data... This may take a few minutes."):
-                df, failures = load_regular_2020_to_current()
-            
-            if df.empty:
-                st.error("Failed to load any data. Check your internet connection or try again later.")
-                if failures:
-                    st.json(failures)
-            else:
-                st.session_state["raw_df"] = df
-                st.session_state["started"] = True
-                st.success(f"Successfully loaded {len(df)} game logs from {len(df['SEASON'].unique())} seasons.")
-                if failures:
-                    st.warning(f"Failed to load data for {len(failures)} season(s).")
-                    st.json(failures)
-
-    with col_clear:
-        if st.button("Clear Cache"):
-            clear_all_caches()
-            st.session_state["started"] = False
-            st.session_state["raw_df"] = pd.DataFrame()
-            st.success("Cache cleared. Please click 'Let's Start' to reload data.")
-
-# =========================
-# Leaderboard Page
-# =========================
-elif page == "Leaderboard":
-    st.title("🏆 Leaderboard")
-    st.caption("Top players by Fantasy Points (Regular Season only, 2020-present).")
-
-    if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
-        st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
-        st.stop()
-    
-    raw = st.session_state["raw_df"].copy()
-    scoring = st.session_state["scoring"]
-
-    # Correção: A função compute_fp_cached estava definida dentro de Player Insights, 
-    # mas é usada aqui. Vou redefinir e corrigir o uso de @st.cache_data.
-    # O cache deve depender dos dados de entrada (df_in) e da string de pontuação (scoring_key).
-    @st.cache_data(show_spinner=False)
-    def compute_fp_cached(df_in: pd.DataFrame, scoring_key: str) -> pd.DataFrame:
-        # O argumento 'scoring' não está sendo passado corretamente na chamada original.
-        # Ele deve vir do estado da sessão.
-        # Vamos passar o dicionário 'scoring' em vez da chave, e o Streamlit cuidará do hash.
-        # A chave de cache será o hash do DataFrame de entrada e do dicionário de scoring.
-        return compute_fantasy_points(df_in, st.session_state["scoring"])
-
-    # A chamada original era:
-    # scoring_key = str(sorted([(k, scoring[k]) for k in scoring.keys()]))
-    # df = compute_fp_cached(raw, scoring_key)
-    # A correção é:
-    df = compute_fp_cached(raw, scoring) # Streamlit hashará o dicionário 'scoring'
-    
-    # Filtros
-    top_n = st.slider("Top N Players", min_value=10, max_value=100, value=25)
-    
-    # Tabs
-    tab1, tab2, tab3 = st.tabs(["Season Totals", "Career Totals", "Game Records"])
-
-    # Season Totals
-    with tab1:
-        st.subheader(f"Top {top_n} Players by Season Total")
-        # Correção: O cálculo de FP por temporada deve usar a coluna 'fantasy_points'
-        # que foi adicionada por compute_fantasy_points.
-        season_totals = (
-            df.groupby(["SEASON","PLAYER_ID","PLAYER_NAME"], as_index=False)
-              .agg(FP=("fantasy_points","sum"))
-        )
-        
-        # Obter o time principal de cada jogador por temporada (o time com mais FP)
-        team_per_season = (
-            df.groupby(["SEASON","PLAYER_ID","TEAM_ABBREVIATION"], as_index=False)
-              .agg(FP=("fantasy_points","sum"))
-        )
-        
-        # Corrigido o erro de sintaxe na linha 503-505
-        main_team = (team_per_season.sort_values(["SEASON","PLAYER_ID","FP"], ascending=[True,True,False])
-                                   .drop_duplicates(["SEASON","PLAYER_ID"])
-                                   .rename(columns={"TEAM_ABBREVIATION":"Team"}))[["SEASON","PLAYER_ID","Team"]]
-        
-        season_totals = season_totals.merge(main_team, on=["SEASON","PLAYER_ID"], how="left")
-        season_totals.rename(columns={"FP":"Fantasy Points"}, inplace=True)
-
-        topN = (season_totals.sort_values(["SEASON","Fantasy Points"], ascending=[True, False])
-                            .groupby("SEASON", group_keys=False)
-                            .apply(lambda g: g.nlargest(top_n, "Fantasy Points")))
-        
-        topN = add_photo_and_name(topN)
-        topN["Rank"] = topN.groupby("SEASON")["Fantasy Points"].rank(ascending=False, method="first").astype(int)
-        topN = topN[["Rank","Photo","Player","Team","SEASON","Fantasy Points","PLAYER_ID"]].rename(columns={"SEASON":"Season"})
-        render_table(topN.drop(columns=["PLAYER_ID"]))
-
-    # Career Records
-    with tab2:
-        st.subheader("Career Records (in 2020‑present window)")
-        career_totals = (
-            df.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False)
-                .agg(Fantasy_Points=("fantasy_points","sum"))
-                .sort_values("Fantasy_Points", ascending=False)
-                .head(top_n)
-        )
-        team_totals = (
-            df.groupby(["PLAYER_ID","TEAM_ABBREVIATION"], as_index=False)
-                .agg(FP=("fantasy_points","sum"))
-        )
-        primary_team = (team_totals.sort_values(["PLAYER_ID","FP"], ascending=[True, False])
-                                   .drop_duplicates(["PLAYER_ID"])
-                                   .rename(columns={"TEAM_ABBREVIATION":"Team"}))[["PLAYER_ID","Team"]]
-        career_totals = career_totals.merge(primary_team, on="PLAYER_ID", how="left")
-        career_totals.rename(columns={"Fantasy_Points":"Fantasy Points"}, inplace=True)
-        out = add_photo_and_name(career_totals)
-        out["Rank"] = range(1, len(out) + 1)
-        out = out[["Rank","Photo","Player","Team","Fantasy Points","PLAYER_ID"]]
-        render_table(out.drop(columns=["PLAYER_ID"]))
-
-    # Game Records
-    with tab3:
-        st.subheader("Game Records")
-        game_top = df.sort_values("fantasy_points", ascending=False).head(top_n).copy()
-        game_top["Team"] = game_top["TEAM_ABBREVIATION"]
-        game_top["Opponent"] = game_top.get("OPPONENT_ABBREVIATION", "")
-        game_top["Season"] = game_top["SEASON"]
-        game_top["Fantasy Points"] = game_top["fantasy_points"]
-        # Correção: O uso de pd.NaT em .get("GAME_DATE", pd.NaT) estava incorreto.
-        # A coluna GAME_DATE já existe e é um datetime, mas a conversão para date estava correta.
-        # A linha original (548) era: game_top["Game Date"] = pd.to_datetime(game_top.get("GAME_DATE", pd.NaT)).dt.date
-        # O problema é que o .get() em um DataFrame pode retornar o valor padrão se a chave não existir.
-        # Como a coluna existe, o .get() retorna a Series.
-        # Vou assumir que a coluna GAME_DATE existe e é datetime (como garantido em fetch_one_season_regular).
-        game_top["Game Date"] = game_top["GAME_DATE"].dt.date
-        out = add_photo_and_name(game_top)
-        out["Rank"] = range(1, len(out) + 1)
-        cols_order = ["Rank", "Photo", "Player", "Team", "Season", "Game Date", "Opponent", "Fantasy Points", "PLAYER_ID"]
-        for col in cols_order:
-            if col not in out.columns:
-                out[col] = pd.NA
-        out = out[cols_order]
-        render_table(out.drop(columns=["PLAYER_ID"]))
-
-# =========================
-# Player Insights Page (Generate Insights button) – league-wide position rank
-# =========================
-elif page == "Player Insights":
-    st.title("📊 Player Insights")
-    st.caption("Filter by Season, Team and Player. Regular Season only (2020‑present).")
-
-    if not st.session_state.get("started", False) or st.session_state.get("raw_df", pd.DataFrame()).empty:
-        st.error("No data available. Please go to the **Setup** page and click **Let's Start**.")
-        st.stop()
-
-    raw = st.session_state["raw_df"].copy()
-    scoring = st.session_state["scoring"]
-
-    # Reutilizando a função de cache definida no Leaderboard
-    @st.cache_data(show_spinner=False)
-    def compute_fp_cached(df_in: pd.DataFrame, scoring_key: Dict[str, Union[float, bool]]) -> pd.DataFrame:
-        return compute_fantasy_points(df_in, scoring_key)
-
-    # A chamada original estava incorreta (linha 576-577):
-    # scoring_key = str(sorted([(k, scoring[k]) for k in scoring.keys()]))
-    # df = compute_fp_cached(raw, scoring_key)
-    # A correção é:
-    df = compute_fp_cached(raw, scoring)
-
-    # ---- Filters: Season -> Team -> Player
-    seasons = sorted(df["SEASON"].dropna().unique().tolist())
-    # Correção: O index -1 pode causar erro se a lista de temporadas for vazia, 
-    # mas o st.stop() acima garante que há dados.
-    sel_season = st.selectbox("Season", options=seasons, index=len(seasons)-1)
-
-    df_season = df[df["SEASON"] == sel_season].copy()
-    teams = sorted(df_season["TEAM_ABBREVIATION"].dropna().unique().tolist())
-    # Correção: O index 0 pode causar erro se a lista de times for vazia.
-    # O código original não tinha essa checagem. Adicionando.
-    if not teams:
-        st.warning(f"No teams found for season {sel_season}.")
-        st.stop()
-        
-    sel_team = st.selectbox("Team", options=teams, index=0)
-
-    df_season_team = df_season[df_season["TEAM_ABBREVIATION"] == sel_team].copy()
-    players = df_season_team[["PLAYER_ID","PLAYER_NAME"]].drop_duplicates().sort_values("PLAYER_NAME")
-    if players.empty:
-        st.warning("No players found for this team/season.")
-        st.stop()
-
-    player_display = players["PLAYER_NAME"].tolist()
-    player_ids = players["PLAYER_ID"].tolist()
-    name_to_id = dict(zip(player_display, player_ids))
-    sel_player_name = st.selectbox("Player", options=player_display, index=0)
-    sel_player_id = name_to_id[sel_player_name]
-
-    # ---- Button to generate insights
-    generate = st.button("Generate Insights")
-    if not generate:
-        st.info("Set the filters above and click **Generate Insights** to view the visuals.")
-        st.stop()
-
-    # Build season-wide positions via team rosters (fast)
-    # Corrigido: O cast para int deve ser feito antes de unique().tolist()
-    season_team_ids = tuple(sorted(df_season["TEAM_ID"].dropna().astype(int).unique().tolist()))
-    pos_map_df = season_positions_map(sel_season, season_team_ids)
-    
-    # Fallback para o jogador selecionado, se não vier no roster
-    # Correção: O cast para int deve ser feito em PLAYER_ID de pos_map_df para comparação
-    if pos_map_df.empty or sel_player_id not in pos_map_df["PLAYER_ID"].astype(int).tolist():
-        fallback_pos = get_player_position(sel_player_id)
-        # Correção: O DataFrame de concatenação deve ter 'PLAYER_ID' como int para consistência
-        new_row = pd.DataFrame([{"PLAYER_ID": int(sel_player_id), "POSITION": fallback_pos}])
-        pos_map_df = pd.concat([pos_map_df, new_row], ignore_index=True)
-        pos_map_df = pos_map_df.drop_duplicates("PLAYER_ID", keep="last") # Evita duplicatas
-
-    # Headshot + position + KPIs
-    colA, colB = st.columns([1, 3])
-    with colA:
-        st.image(player_headshot_url(sel_player_id), width=220)
-        # Correção: O filtro deve ser feito com int para garantir a comparação correta
-        pos_row = pos_map_df[pos_map_df["PLAYER_ID"].astype(int) == int(sel_player_id)]
-        pos_str = (pos_row["POSITION"].iloc[0] if not pos_row.empty else "") or "N/A"
-        st.write(f"**Position:** {pos_str}")
-
-    # Player games for selection
-    p_games = df_season_team[df_season_team["PLAYER_ID"] == sel_player_id].copy()
-    if p_games.empty:
-        st.warning("No games found for this player/season/team.")
-        st.stop()
-
-    # Weekly metrics
-    season_start_date = df_season["GAME_DATE"].min()
-    # Correção: A coluna GAME_DATE deve ser um objeto datetime para subtração
-    if not pd.api.types.is_datetime64_any_dtype(p_games["GAME_DATE"]):
-         p_games["GAME_DATE"] = pd.to_datetime(p_games["GAME_DATE"])
-         
-    p_games["WEEK"] = ((p_games["GAME_DATE"] - season_start_date).dt.days // 7 + 1).astype(int)
-    weekly_avg = p_games.groupby("WEEK", as_index=False).agg(avg_fp=("fantasy_points","mean"))
-    weekly_max = p_games.groupby("WEEK", as_index=False).agg(max_fp=("fantasy_points","max"))
-    avg_fp_season = p_games["fantasy_points"].mean()
-    avg_weekly_max = weekly_max["max_fp"].mean() if not weekly_max.empty else float("nan")
-
-    # League-wide overall & position ranks (by avg_fp in season)
-    per_player = df_season.groupby(["PLAYER_ID","PLAYER_NAME"], as_index=False).agg(
-        GP=("GAME_ID","nunique"),
-        avg_fp=("fantasy_points","mean")
-    )
-    # Attach positions from map
-    # Correção: O merge deve ser feito com o tipo correto (int)
-    per_player["PLAYER_ID"] = per_player["PLAYER_ID"].astype(int)
-    pos_map_df["PLAYER_ID"] = pos_map_df["PLAYER_ID"].astype(int)
-    per_player = per_player.merge(pos_map_df, on="PLAYER_ID", how="left")
-    per_player["POS_PRIMARY"] = per_player["POSITION"].fillna("").apply(primary_position_letter)
-
-    # Overall rank
-    league_sorted = per_player.sort_values("avg_fp", ascending=False).reset_index(drop=True)
-    # Correção: O filtro deve usar int(sel_player_id)
-    overall_rank = (league_sorted.index[league_sorted["PLAYER_ID"] == int(sel_player_id)][0] + 1) if int(sel_player_id) in league_sorted["PLAYER_ID"].values else None
-    overall_count = len(league_sorted)
-
-    # League-wide position rank (G/F/C bucket)
-    p_primary = primary_position_letter(pos_str if pos_str != "N/A" else "")
-    in_pos = per_player[per_player["POS_PRIMARY"] == p_primary].sort_values("avg_fp", ascending=False).reset_index(drop=True)
-    # Correção: O filtro deve usar int(sel_player_id)
-    if not in_pos.empty and int(sel_player_id) in in_pos["PLAYER_ID"].values:
-        pos_rank = in_pos.index[in_pos["PLAYER_ID"] == int(sel_player_id)][0] + 1
-        pos_count = len(in_pos)
-    else:
-        pos_rank, pos_count = None, None
-
-    with colB:
-        # KPI cards (4 lado a lado)
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Overall Rank</div>
-                  <div class="kpi-value">{('#'+str(overall_rank)) if overall_rank else 'N/A'}</div>
-                  <div class="kpi-sub">out of {overall_count}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k2:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Position Rank ({p_primary or 'N/A'})</div>
-                  <div class="kpi-value">{('#'+str(pos_rank)) if pos_rank else 'N/A'}</div>
-                  <div class="kpi-sub">league-wide, out of {pos_count if pos_count else '—'}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k3:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Avg FPTS (season)</div>
-                  <div class="kpi-value">{avg_fp_season:.2f}</div>
-                  <div class="kpi-sub">per game</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with k4:
-            st.markdown(f"""
-                <div class="kpi-card">
-                  <div class="kpi-title">Avg Weekly Max</div>
-                  <div class="kpi-value">{(0.0 if np.isnan(avg_weekly_max) else float(avg_weekly_max)):.2f}</div>
-                  <div class="kpi-sub">mean of weekly best game</div>
-                </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.subheader("Weekly Trend")
-
-    # Two-line chart: weekly average (blue) and weekly max (red) + visual legend
-    try:
-        import altair as alt
-        chart1 = alt.Chart(weekly_avg).mark_line(point=True, color="#1A73E8").encode(
-            x=alt.X("WEEK:O", title="Week"),
-            y=alt.Y("avg_fp:Q", title="Fantasy Points"),
-            tooltip=[alt.Tooltip("WEEK:O"), alt.Tooltip("avg_fp:Q", format=".2f", title="Weekly average")]
-        )
-        chart2 = alt.Chart(weekly_max).mark_line(point=True, color="#D93025").encode(
-            x=alt.X("WEEK:O"),
-            y=alt.Y("max_fp:Q"),
-            tooltip=[alt.Tooltip("WEEK:O"), alt.Tooltip("max_fp:Q", format=".2f", title="Weekly max")]
-        )
-        st.altair_chart(chart1 + chart2, use_container_width=True)
-
-        st.markdown(
-            """
-            <div class="legend">
-              <span class="legend-bullet" style="background:#1A73E8"></span>Weekly average
-              &nbsp;&nbsp;&nbsp;&nbsp;
-              <span class="legend-bullet" style="background:#D93025"></span>Weekly max
-            </div>
-            """, unsafe_allow_html=True)
-    except ImportError:
-        st.warning("Altair is required for charts. Please install it.")
-        st.dataframe(weekly_avg)
-        st.dataframe(weekly_max)
-        
-    st.markdown("---")
-    st.subheader("Game Log")
-    
-    # Correção: A coluna 'Game Date' deve ser criada corretamente
-    p_games["Game Date"] = p_games["GAME_DATE"].dt.date
-    
-    p_games_display = p_games[[
-        "Game Date", "MATCHUP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV", 
-        "FG3M", "FG3A", "FTM", "FTA", "fantasy_points"
-    ]].rename(columns={"MATCHUP": "Matchup", "MIN": "Min", "PTS": "Pts", "REB": "Reb", "AST": "Ast", 
-                       "STL": "Stl", "BLK": "Blk", "TOV": "TO", "FG3M": "3PM", "FG3A": "3PA", 
-                       "FTM": "FTM", "FTA": "FTA", "fantasy_points": "FPTS"})
-    
-    # Correção: O uso de st.column_config.NumberColumn
-    column_config = {
-        "Min": st.column_config.NumberColumn("Min", format="%.0f"),
-        "Pts": st.column_config.NumberColumn("Pts", format="%.0f"),
-        "Reb": st.column_config.NumberColumn("Reb", format="%.0f"),
-        "Ast": st.column_config.NumberColumn("Ast", format="%.0f"),
-        "Stl": st.column_config.NumberColumn("Stl", format="%.0f"),
-        "Blk": st.column_config.NumberColumn("Blk", format="%.0f"),
-        "TO": st.column_config.NumberColumn("TO", format="%.0f"),
-        "3PM": st.column_config.NumberColumn("3PM", format="%.0f"),
-        "3PA": st.column_config.NumberColumn("3PA", format="%.0f"),
-        "FTM": st.column_config.NumberColumn("FTM", format="%.0f"),
-        "FTA": st.column_config.NumberColumn("FTA", format="%.0f"),
-        "FPTS": st.column_config.NumberColumn("FPTS", format="%.2f"),
+# CSS customizado para design profissional
+st.markdown("""
+<style>
+    /* Tema principal */
+    .main {
+        background: linear-gradient(135deg, #1e3a5f 0%, #2c5282 100%);
+        color: white;
     }
     
-    st.dataframe(p_games_display, use_container_width=True, hide_index=True, column_config=column_config)
+    /* Header customizado */
+    .header-container {
+        background: linear-gradient(90deg, #1e3a5f 0%, #2c5282 100%);
+        padding: 1rem 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .header-title {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: white;
+        text-align: center;
+        margin: 0;
+    }
+    
+    .header-subtitle {
+        font-size: 1.2rem;
+        color: #e2e8f0;
+        text-align: center;
+        margin: 0.5rem 0 0 0;
+    }
+    
+    /* Cards de estatísticas */
+    .stat-card {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 1.5rem;
+        border-radius: 10px;
+        border-left: 4px solid #e74c3c;
+        margin: 1rem 0;
+        backdrop-filter: blur(10px);
+    }
+    
+    .stat-value {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #ffffff;
+        margin: 0;
+    }
+    
+    .stat-label {
+        font-size: 1rem;
+        color: #cbd5e0;
+        margin: 0.5rem 0 0 0;
+    }
+    
+    /* Sidebar customizada */
+    .css-1d391kg {
+        background: linear-gradient(180deg, #2d3748 0%, #1a202c 100%);
+    }
+    
+    /* Filtros */
+    .filter-container {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    /* Métricas */
+    .metric-container {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        color: white;
+    }
+    
+    /* Botões */
+    .stButton > button {
+        background: linear-gradient(90deg, #e74c3c 0%, #c0392b 100%);
+        color: white;
+        border: none;
+        border-radius: 5px;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+    }
+    
+    .stButton > button:hover {
+        background: linear-gradient(90deg, #c0392b 0%, #a93226 100%);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Selectbox */
+    .stSelectbox > div > div {
+        background-color: rgba(255, 255, 255, 0.1);
+        color: white;
+    }
+    
+    /* Multiselect */
+    .stMultiSelect > div > div {
+        background-color: rgba(255, 255, 255, 0.1);
+        color: white;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: rgba(255, 255, 255, 0.1);
+        color: white;
+        border-radius: 5px 5px 0 0;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #e74c3c;
+        color: white;
+    }
+    
+    /* Esconder elementos do Streamlit */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
-# =========================
-# Chat Page (opcional)
-# =========================
-elif page == "Chat (AI)":
-    st.title("🤖 Chat with AI")
-    st.caption("Ask anything about the NBA or Fantasy Basketball.")
+@st.cache_data
+def load_data():
+    """Carrega os dados da NFL"""
+    
+    data_dir = "/home/ubuntu/nfl_data"
+    
+    try:
+        # Carregar dados consolidados
+        df = pd.read_csv(f"{data_dir}/consolidated_fantasy_data.csv")
+        
+        # Carregar dados de times
+        teams_df = pd.read_csv(f"{data_dir}/team_data.csv")
+        
+        # Carregar resumo
+        with open(f"{data_dir}/data_summary.json", 'r') as f:
+            summary = json.load(f)
+        
+        return df, teams_df, summary
+        
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {str(e)}")
+        return None, None, None
 
-    if not openai.api_key:
-        st.error("OpenAI API key not found in Streamlit secrets. Please configure it to use the chat feature.")
-        st.stop()
+def create_header():
+    """Cria o header da aplicação"""
+    
+    st.markdown("""
+    <div class="header-container">
+        <h1 class="header-title">🏈 NFL Fantasy Analytics</h1>
+        <p class="header-subtitle">Dashboard Avançado de Análise de Fantasy Football (2010-2024)</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = [
-            {"role": "system", "content": "You are a helpful and knowledgeable NBA and Fantasy Basketball assistant. Keep your answers concise and accurate."},
-            {"role": "assistant", "content": "Hello! Ask me anything about NBA stats, players, or fantasy basketball."}
-        ]
+def create_sidebar_filters(df: pd.DataFrame, teams_df: pd.DataFrame):
+    """Cria filtros na sidebar"""
+    
+    st.sidebar.markdown("## 🎯 Filtros")
+    
+    # Filtro de temporada
+    seasons = sorted(df['season'].unique(), reverse=True)
+    selected_seasons = st.sidebar.multiselect(
+        "📅 Temporadas",
+        options=seasons,
+        default=seasons[:3],  # Últimas 3 temporadas por padrão
+        help="Selecione as temporadas para análise"
+    )
+    
+    # Filtro de posição
+    positions = ['QB', 'RB', 'WR', 'TE']
+    selected_positions = st.sidebar.multiselect(
+        "🎯 Posições",
+        options=positions,
+        default=positions,
+        help="Selecione as posições para análise"
+    )
+    
+    # Filtro de times
+    teams = sorted(df['recent_team'].unique())
+    selected_teams = st.sidebar.multiselect(
+        "🏈 Times",
+        options=teams,
+        default=teams,
+        help="Selecione os times para análise"
+    )
+    
+    # Filtro de tipo de temporada
+    season_type = st.sidebar.selectbox(
+        "📊 Tipo de Temporada",
+        options=['REG', 'POST', 'ALL'],
+        index=0,
+        help="Tipo de jogos para análise"
+    )
+    
+    # Filtro de semanas
+    if selected_seasons:
+        filtered_df = df[df['season'].isin(selected_seasons)]
+        weeks = sorted(filtered_df['week'].unique())
+        selected_weeks = st.sidebar.multiselect(
+            "📈 Semanas",
+            options=weeks,
+            default=weeks,
+            help="Selecione as semanas para análise"
+        )
+    else:
+        selected_weeks = []
+    
+    return {
+        'seasons': selected_seasons,
+        'positions': selected_positions,
+        'teams': selected_teams,
+        'season_type': season_type,
+        'weeks': selected_weeks
+    }
 
-    for message in st.session_state.messages:
-        if message["role"] != "system":
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+def filter_data(df: pd.DataFrame, filters: Dict):
+    """Aplica filtros aos dados"""
+    
+    filtered_df = df.copy()
+    
+    if filters['seasons']:
+        filtered_df = filtered_df[filtered_df['season'].isin(filters['seasons'])]
+    
+    if filters['positions']:
+        filtered_df = filtered_df[filtered_df['position'].isin(filters['positions'])]
+    
+    if filters['teams']:
+        filtered_df = filtered_df[filtered_df['recent_team'].isin(filters['teams'])]
+    
+    if filters['weeks']:
+        filtered_df = filtered_df[filtered_df['week'].isin(filters['weeks'])]
+    
+    return filtered_df
 
-    if prompt := st.chat_input("Ask a question..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+def create_overview_metrics(df: pd.DataFrame):
+    """Cria métricas de visão geral"""
+    
+    st.markdown("## 📊 Visão Geral")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        total_players = df['player_id'].nunique()
+        st.markdown(f"""
+        <div class="stat-card">
+            <p class="stat-value">{total_players:,}</p>
+            <p class="stat-label">Jogadores</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        total_games = len(df)
+        st.markdown(f"""
+        <div class="stat-card">
+            <p class="stat-value">{total_games:,}</p>
+            <p class="stat-label">Jogos</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        total_seasons = df['season'].nunique()
+        st.markdown(f"""
+        <div class="stat-card">
+            <p class="stat-value">{total_seasons}</p>
+            <p class="stat-label">Temporadas</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        total_teams = df['recent_team'].nunique()
+        st.markdown(f"""
+        <div class="stat-card">
+            <p class="stat-value">{total_teams}</p>
+            <p class="stat-label">Times</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col5:
+        avg_fantasy_points = df['fantasy_points_ppr'].mean()
+        st.markdown(f"""
+        <div class="stat-card">
+            <p class="stat-value">{avg_fantasy_points:.1f}</p>
+            <p class="stat-label">Média PPR</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            full_response = ""
+def create_player_profile(df: pd.DataFrame, teams_df: pd.DataFrame):
+    """Cria seção de perfil do jogador"""
+    
+    st.markdown("## 👤 Perfil do Jogador")
+    
+    # Seletor de jogador
+    players = df.groupby(['player_display_name', 'position', 'recent_team']).agg({
+        'fantasy_points_ppr': 'sum',
+        'season': 'max'
+    }).reset_index()
+    
+    players = players.sort_values('fantasy_points_ppr', ascending=False)
+    
+    player_options = [f"{row['player_display_name']} ({row['position']}) - {row['recent_team']}" 
+                     for _, row in players.head(100).iterrows()]
+    
+    selected_player_str = st.selectbox(
+        "🔍 Selecionar Jogador",
+        options=player_options,
+        help="Selecione um jogador para análise detalhada"
+    )
+    
+    if selected_player_str:
+        # Extrair informações do jogador
+        player_name = selected_player_str.split(' (')[0]
+        player_data = df[df['player_display_name'] == player_name].copy()
+        
+        if not player_data.empty:
+            # Informações básicas do jogador
+            latest_data = player_data.sort_values('season', ascending=False).iloc[0]
             
-            # Correção: O código original estava usando o cliente OpenAI de forma incorreta.
-            # O código original não estava usando a biblioteca 'openai' importada, 
-            # e o uso de 'st.session_state.messages' como parâmetro 'messages' estava incompleto.
-            # Além disso, o código original tentava usar um modelo inexistente ('gpt-4-turbo-preview').
-            # Vamos usar um modelo genérico e o cliente correto.
-            try:
-                # O cliente deve ser inicializado corretamente. Assumindo que a biblioteca 'openai'
-                # está instalada e configurada com a chave via st.secrets.
-                # Como não podemos executar o código, vamos simular a chamada ou usar um placeholder
-                # para o código corrigido, assumindo que o usuário tem a biblioteca 'openai' instalada.
-                # A correção é garantir que a chamada use o cliente e os parâmetros corretos.
+            col1, col2, col3 = st.columns([1, 2, 1])
+            
+            with col1:
+                # Foto do jogador (placeholder)
+                st.markdown(f"""
+                <div style="text-align: center; padding: 1rem; background: rgba(255,255,255,0.1); border-radius: 10px;">
+                    <div style="width: 100px; height: 100px; background: #e74c3c; border-radius: 50%; margin: 0 auto; display: flex; align-items: center; justify-content: center; font-size: 2rem;">
+                        {latest_data['position']}
+                    </div>
+                    <h3 style="color: white; margin: 1rem 0 0 0;">{latest_data['player_display_name']}</h3>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                # Logo do time e estatísticas principais
+                team_info = teams_df[teams_df['team_abbr'] == latest_data['recent_team']]
                 
-                # Exemplo de como a chamada DEVERIA ser:
-                # client = openai.OpenAI(api_key=st.secrets.get("OPENAI_API_KEY"))
-                # response = client.chat.completions.create(
-                #     model="gpt-4-turbo-preview", # Substituir por um modelo acessível
-                #     messages=st.session_state.messages
-                # )
-                # full_response = response.choices[0].message.content
+                if not team_info.empty:
+                    team_logo = team_info.iloc[0]['team_logo_espn']
+                    team_name = team_info.iloc[0]['team_name']
+                    
+                    st.markdown(f"""
+                    <div style="text-align: center; padding: 1rem;">
+                        <img src="{team_logo}" width="80" style="margin-bottom: 1rem;">
+                        <h4 style="color: white; margin: 0;">{team_name}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
                 
-                # Como não podemos garantir o modelo, vamos apenas garantir a estrutura correta.
-                # Vou usar um placeholder de resposta para evitar erros de execução.
+                # Estatísticas principais
+                total_fantasy_points = player_data['fantasy_points_ppr'].sum()
+                total_games = len(player_data)
+                avg_points_per_game = total_fantasy_points / total_games if total_games > 0 else 0
                 
-                # Placeholder para o código corrigido:
-                # st.session_state.messages.append({"role": "assistant", "content": "Thinking..."})
-                # st.error("A chamada à API do OpenAI precisa ser revisada. O código original estava incompleto.")
+                col2_1, col2_2, col2_3 = st.columns(3)
                 
-                # Para fins de correção, vou simplesmente usar um modelo de resposta estático
-                # e indicar que a chamada à API deve ser feita corretamente.
+                with col2_1:
+                    st.metric("Total PPR", f"{total_fantasy_points:.1f}")
                 
-                # Corrigindo a chamada à API (assumindo que o cliente OpenAI é o correto)
-                # O código original estava faltando a inicialização do cliente.
-                # Para um ambiente Streamlit/Python, a inicialização é:
-                # client = openai.OpenAI(api_key=openai.api_key)
+                with col2_2:
+                    st.metric("Jogos", total_games)
                 
-                # Vou manter a estrutura de streaming, mas usar um modelo de resposta simples
-                # para evitar dependência de um modelo específico.
+                with col2_3:
+                    st.metric("PPR/Jogo", f"{avg_points_per_game:.1f}")
+            
+            with col3:
+                # Estatísticas específicas por posição
+                position = latest_data['position']
                 
-                # A correção mais provável para o erro de sintaxe era a falta de inicialização do cliente
-                # ou o uso incorreto de 'st.session_state.messages' como iterável para streaming.
+                if position == 'QB':
+                    passing_yards = player_data['passing_yards'].sum()
+                    passing_tds = player_data['passing_tds'].sum()
+                    st.metric("Jardas Passe", f"{passing_yards:,.0f}")
+                    st.metric("TDs Passe", f"{passing_tds:.0f}")
                 
-                # Como não posso testar a API, vou reescrever a seção para ser robusta:
+                elif position in ['RB']:
+                    rushing_yards = player_data['rushing_yards'].sum()
+                    rushing_tds = player_data['rushing_tds'].sum()
+                    st.metric("Jardas Corrida", f"{rushing_yards:,.0f}")
+                    st.metric("TDs Corrida", f"{rushing_tds:.0f}")
                 
-                # A chamada correta usando o cliente 'openai' (se instalado) seria:
-                # client = openai.OpenAI(api_key=openai.api_key)
-                # stream = client.chat.completions.create(
-                #     model="gpt-4-turbo-preview", # Substituir por um modelo acessível
-                #     messages=[
-                #         {"role": m["role"], "content": m["content"]}
-                #         for m in st.session_state.messages
-                #     ],
-                #     stream=True,
-                # )
-                # for chunk in stream:
-                #     if chunk.choices:
-                #         content = chunk.choices[0].delta.content
-                #         if content is not None:
-                #             full_response += content
-                #             message_placeholder.markdown(full_response + "▌")
-                
-                # Como não posso garantir o modelo, vou usar um modelo de resposta estática
-                # e indicar que a chamada à API deve ser feita corretamente.
-                
-                full_response = "A função de chat foi corrigida para usar a biblioteca `openai` corretamente, mas o modelo `gpt-4-turbo-preview` foi substituído por um placeholder. Por favor, substitua pelo modelo OpenAI que você tem acesso (ex: `gpt-3.5-turbo`)."
-                time.sleep(1)
-                message_placeholder.markdown(full_response)
-                
-            except Exception as e:
-                full_response = f"An error occurred during AI chat: {e}"
-                message_placeholder.error(full_response)
+                elif position in ['WR', 'TE']:
+                    receiving_yards = player_data['receiving_yards'].sum()
+                    receiving_tds = player_data['receiving_tds'].sum()
+                    receptions = player_data['receptions'].sum()
+                    st.metric("Recepções", f"{receptions:.0f}")
+                    st.metric("Jardas Recepção", f"{receiving_yards:,.0f}")
+                    st.metric("TDs Recepção", f"{receiving_tds:.0f}")
+            
+            return player_data
+    
+    return None
 
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+def create_teammate_impact_analysis(player_data: pd.DataFrame, all_data: pd.DataFrame):
+    """
+    Cria a seção de análise de impacto do companheiro de equipe,
+    incluindo a contagem de jogos com e sem o companheiro.
+    """
+    st.markdown("### 🤝 Teammate Impact (with vs without)")
+    
+    # 1. Identificar possíveis companheiros de equipe (jogadores no mesmo time/semana/temporada)
+    # Excluir o próprio jogador
+    player_id = player_data['player_id'].iloc[0]
+    
+    # Criar um DataFrame de jogos do jogador principal
+    player_games = player_data[['game_id', 'season', 'week', 'recent_team', 'fantasy_points_ppr']].copy()
+    player_games.rename(columns={'fantasy_points_ppr': 'player_fpts_with'}, inplace=True)
+    
+    # Filtrar todos os dados para jogos do mesmo time e temporada
+    team_games = all_data[
+        (all_data['recent_team'].isin(player_games['recent_team'].unique())) &
+        (all_data['season'].isin(player_games['season'].unique())) &
+        (all_data['player_id'] != player_id)
+    ].copy()
+    
+    # Agrupar por companheiro de equipe
+    teammate_stats = team_games.groupby('player_id').agg(
+        teammate_name=('player_display_name', 'first'),
+        teammate_position=('position', 'first'),
+        teammate_team=('recent_team', 'first'),
+        total_games_teammate=('game_id', 'nunique')
+    ).reset_index()
+    
+    # 2. Calcular impacto
+    impact_data = []
+    
+    # Limitar aos companheiros com um número mínimo de jogos juntos (ex: 5)
+    min_games_together = 5 
+    
+    for index, row in teammate_stats.iterrows():
+        teammate_id = row['player_id']
+        
+        # Jogos com o companheiro (teammate_id estava em campo)
+        games_with = team_games[team_games['player_id'] == teammate_id]['game_id'].unique()
+        df_with = player_games[player_games['game_id'].isin(games_with)]
+        
+        # Jogos sem o companheiro (teammate_id não estava em campo, mas o jogador principal estava)
+        all_player_games = player_games['game_id'].unique()
+        games_without = [g for g in all_player_games if g not in games_with]
+        df_without = player_games[player_games['game_id'].isin(games_without)]
+        
+        count_with = len(df_with)
+        count_without = len(df_without)
+        
+        if count_with >= min_games_together:
+            avg_fpts_with = df_with['player_fpts_with'].mean()
+            avg_fpts_without = df_without['player_fpts_with'].mean()
+            
+            impact = avg_fpts_with - avg_fpts_without
+            
+            impact_data.append({
+                'Teammate': f"{row['teammate_name']} ({row['teammate_position']})",
+                'Team': row['teammate_team'],
+                'Avg FPTS With': f"{avg_fpts_with:.1f}",
+                'Avg FPTS Without': f"{avg_fpts_without:.1f}",
+                'Impact (With - Without)': f"{impact:.1f}",
+                'Games With': count_with, # NOVO: Contagem de jogos com
+                'Games Without': count_without # NOVO: Contagem de jogos sem
+            })
+            
+    if impact_data:
+        impact_df = pd.DataFrame(impact_data)
+        impact_df['Impact (With - Without)'] = impact_df['Impact (With - Without)'].astype(float)
+        impact_df = impact_df.sort_values('Impact (With - Without)', ascending=False).head(10)
+        
+        st.dataframe(
+            impact_df,
+            column_order=['Teammate', 'Team', 'Games With', 'Games Without', 'Avg FPTS With', 'Avg FPTS Without', 'Impact (With - Without)'],
+            column_config={
+                'Impact (With - Without)': st.column_config.Progress(
+                    "Impact (With - Without)",
+                    format="%.1f",
+                    min_value=impact_df['Impact (With - Without)'].min(),
+                    max_value=impact_df['Impact (With - Without)'].max(),
+                ),
+                'Games With': "Jogos Com",
+                'Games Without': "Jogos Sem",
+                'Avg FPTS With': "Média FPTS Com",
+                'Avg FPTS Without': "Média FPTS Sem",
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        st.info(f"💡 **Nota**: A análise considera companheiros que jogaram pelo menos {min_games_together} jogos com o jogador principal.")
+    else:
+        st.info("Não há dados de impacto de companheiros de equipe suficientes para exibir.")
 
-# Fim do código
+def create_player_kpis(player_data: pd.DataFrame, all_data: pd.DataFrame):
+    """
+    Cria a seção de KPIs de Desempenho e Rankings do jogador,
+    incluindo a posição em FPTS gerados por categoria estatística.
+    """
+    st.markdown("### 🏆 KPIs de Desempenho e Rankings")
+    
+    # 1. Definir as colunas de estatísticas e seus pesos em FPTS (PPR)
+    # Baseado em regras PPR (1 ponto por recepção, 6 por TD, 1 ponto a cada 10 jardas, -2 por INT/Fumble)
+    # Para simplificar, focaremos nas colunas de estatísticas que mais contribuem para FPTS
+    
+    stat_cols = {
+        'passing_yards': {'label': 'Jardas Passe', 'fpts_per_unit': 0.04}, # 1/25
+        'passing_tds': {'label': 'TDs Passe', 'fpts_per_unit': 4},
+        'rushing_yards': {'label': 'Jardas Corrida', 'fpts_per_unit': 0.1}, # 1/10
+        'rushing_tds': {'label': 'TDs Corrida', 'fpts_per_unit': 6},
+        'receiving_yards': {'label': 'Jardas Recepção', 'fpts_per_unit': 0.1}, # 1/10
+        'receiving_tds': {'label': 'TDs Recepção', 'fpts_per_unit': 6},
+        'receptions': {'label': 'Recepções', 'fpts_per_unit': 1},
+    }
+    
+    # Estatísticas negativas (perda de pontos)
+    neg_stat_cols = {
+        'interceptions': {'label': 'INTs (-2)', 'fpts_per_unit': -2},
+        'fumbles_lost': {'label': 'Fumbles Perdidos (-2)', 'fpts_per_unit': -2},
+    }
+    
+    # 2. Calcular FPTS médios por jogo gerados por cada categoria para TODOS os jogadores
+    
+    # Agrupar dados de todos os jogadores por jogo
+    all_players_agg = all_data.groupby('player_id').agg(
+        player_name=('player_display_name', 'first'),
+        position=('position', 'first'),
+        games_played=('game_id', 'nunique'),
+        **{col: ('mean') for col in stat_cols.keys()},
+        **{col: ('mean') for col in neg_stat_cols.keys()}
+    ).reset_index()
+    
+    # Filtrar jogadores com pelo menos 3 jogos
+    all_players_agg = all_players_agg[all_players_agg['games_played'] >= 3].copy()
+    
+    # Calcular FPTS médios gerados por categoria
+    for col, info in stat_cols.items():
+        all_players_agg[f'fpts_avg_by_{col}'] = all_players_agg[col] * info['fpts_per_unit']
+    
+    for col, info in neg_stat_cols.items():
+        all_players_agg[f'fpts_avg_by_{col}'] = all_players_agg[col] * info['fpts_per_unit']
+        
+    # 3. Determinar o ranking (posição) do jogador principal em cada categoria
+    
+    player_id = player_data['player_id'].iloc[0]
+    player_position = player_data['position'].iloc[0]
+    
+    # Filtrar apenas jogadores da mesma posição
+    pos_agg = all_players_agg[all_players_agg['position'] == player_position].copy()
+    
+    kpi_data = []
+    
+    # KPIs positivos (maior é melhor)
+    for col, info in stat_cols.items():
+        fpts_col = f'fpts_avg_by_{col}'
+        
+        # Calcular ranking (posição)
+        pos_agg['rank'] = pos_agg[fpts_col].rank(ascending=False, method='min')
+        
+        player_row = pos_agg[pos_agg['player_id'] == player_id].iloc[0]
+        
+        kpi_data.append({
+            'KPI': f"FPTS/Jogo por {info['label']}",
+            'Valor do Jogador': f"{player_row[fpts_col]:.2f}",
+            'Posição (Rank)': f"{int(player_row['rank'])}/{len(pos_agg)}",
+            'Tipo': 'Positivo'
+        })
+
+    # KPIs negativos (menor é melhor)
+    for col, info in neg_stat_cols.items():
+        fpts_col = f'fpts_avg_by_{col}'
+        
+        # Calcular ranking (posição) - menor valor absoluto (mais próximo de 0) é melhor
+        # Como os valores são negativos, o rank deve ser crescente (ascending=True)
+        pos_agg['rank'] = pos_agg[fpts_col].rank(ascending=True, method='min')
+        
+        player_row = pos_agg[pos_agg['player_id'] == player_id].iloc[0]
+        
+        kpi_data.append({
+            'KPI': f"Perda FPTS/Jogo por {info['label'].split('(')[0].strip()}",
+            'Valor do Jogador': f"{player_row[fpts_col]:.2f}", # Valor negativo
+            'Posição (Rank)': f"{int(player_row['rank'])}/{len(pos_agg)}",
+            'Tipo': 'Negativo'
+        })
+        
+    # 4. Exibir KPIs
+    kpi_df = pd.DataFrame(kpi_data)
+    
+    st.dataframe(
+        kpi_df,
+        column_config={
+            'KPI': 'Métrica',
+            'Valor do Jogador': 'Média FPTS/Jogo',
+            'Posição (Rank)': f'Posição entre {player_position}s',
+        },
+        hide_index=True,
+        use_container_width=True
+    )
+    st.info(f"💡 **Interpretação**: O ranking indica a posição do jogador em relação a todos os outros jogadores da posição {player_position} com pelo menos 3 jogos, classificado pela média de FPTS/Jogo gerada pela métrica.")
+
+def create_league_insights(df: pd.DataFrame, teams_df: pd.DataFrame):
+    """
+    Cria a seção League Insights com tabelas de FPTS cedidos por time por categoria.
+    """
+    st.markdown("### 🌐 League Insights: Defesas vs. Posições")
+    
+    # 1. Definir as categorias de estatísticas defensivas
+    # Usaremos as mesmas estatísticas de contribuição de FPTS para calcular o que a defesa cede
+    
+    stat_cols = {
+        'fantasy_points_ppr': 'FPTS Total',
+        'passing_yards': 'Jardas Passe',
+        'rushing_yards': 'Jardas Corrida',
+        'receiving_yards': 'Jardas Recepção',
+        'receptions': 'Recepções',
+        'passing_tds': 'TDs Passe',
+        'rushing_tds': 'TDs Corrida',
+        'receiving_tds': 'TDs Recepção',
+        'interceptions': 'INTs (Negativo)',
+        'fumbles_lost': 'Fumbles Perdidos (Negativo)',
+    }
+    
+    # Mapeamento para as tabelas solicitadas pelo usuário (adaptado para NFL)
+    user_stat_map = {
+        'fantasy_points_ppr': 'Total FPTS',
+        'passing_yards': 'Passe',
+        'rushing_yards': 'Corrida',
+        'receiving_yards': 'Recepção',
+        'receptions': 'Recepções',
+        'passing_tds': 'TDs Passe',
+        'rushing_tds': 'TDs Corrida',
+        'receiving_tds': 'TDs Recepção',
+    }
+    
+    # 2. Calcular FPTS médios cedidos por jogo pela defesa (opponent_team)
+    
+    # Agrupar por time adversário (defesa)
+    defense_agg = df.groupby(['opponent_team']).agg(
+        games_played=('game_id', 'nunique'),
+        **{col: ('sum') for col in stat_cols.keys()}
+    ).reset_index()
+    
+    # Calcular média por jogo
+    for col in stat_cols.keys():
+        defense_agg[f'avg_{col}_cedido'] = defense_agg[col] / defense_agg['games_played']
+        
+    # 3. Criar e exibir as tabelas
+    
+    # Dicionário para mapear abreviação do time para nome completo
+    team_name_map = teams_df.set_index('team_abbr')['team_name'].to_dict()
+    defense_agg['Team Name'] = defense_agg['opponent_team'].map(team_name_map)
+    
+    # Colunas a serem exibidas nas tabelas
+    display_cols = ['Team Name', 'avg_fantasy_points_ppr_cedido']
+    
+    # Tabela 1: Média de FPTS cedidos por partida (Total)
+    st.markdown("#### 🏈 FPTS Cedidos por Partida (Total)")
+    fpts_table = defense_agg.sort_values('avg_fantasy_points_ppr_cedido', ascending=False)[display_cols].copy()
+    fpts_table.columns = ['Equipe', 'Média FPTS Cedidos']
+    st.dataframe(fpts_table.head(15).style.format({'Média FPTS Cedidos': "{:.1f}"}), hide_index=True, use_container_width=True)
+    
+    # Tabelas por categoria estatística
+    
+    st.markdown("#### 📊 FPTS Cedidos por Categoria Estatística")
+    
+    # Usar colunas para organizar as tabelas (3 colunas por linha)
+    cols = st.columns(3)
+    col_idx = 0
+    
+    for stat_col, stat_label in user_stat_map.items():
+        
+        # Coluna de média cedida
+        avg_col = f'avg_{stat_col}_cedido'
+        
+        # Título da tabela
+        title = f"Média {stat_label} Cedidos"
+        
+        # Tabela
+        table_data = defense_agg.sort_values(avg_col, ascending=False)[['Team Name', avg_col]].copy()
+        table_data.columns = ['Equipe', 'Média Cedida']
+        
+        with cols[col_idx % 3]:
+            st.markdown(f"**{title}**")
+            st.dataframe(table_data.head(10).style.format({'Média Cedida': "{:.1f}"}), hide_index=True, use_container_width=True)
+        
+        col_idx += 1
+        
+    # Tabela de Perda de Pontos (Turnovers)
+    
+    st.markdown("#### 🚨 Perda de Pontos por Turnovers")
+    
+    # Calcular FPTS de Turnovers cedidos (INTs e Fumbles)
+    defense_agg['avg_turnover_fpts_cedido'] = (
+        defense_agg['avg_interceptions_cedido'] * -2 + 
+        defense_agg['avg_fumbles_lost_cedido'] * -2
+    )
+    
+    # O time que cede MAIS perda de pontos (valor absoluto negativo maior) é o PIOR
+    # Queremos do maior para o menor (do mais negativo para o menos negativo)
+    turnover_table = defense_agg.sort_values('avg_turnover_fpts_cedido', ascending=True)[['Team Name', 'avg_turnover_fpts_cedido']].copy()
+    turnover_table.columns = ['Equipe', 'Média FPTS Perdidos Cedidos']
+    
+    st.dataframe(
+        turnover_table.head(10).style.format({'Média FPTS Perdidos Cedidos': "{:.1f}"}), 
+        hide_index=True, 
+        use_container_width=True
+    )
+    st.info("💡 **Interpretação**: Quanto mais negativo o valor, mais FPTS a defesa adversária gera por turnovers (INTs e Fumbles Perdidos).")
+
+def main():
+    """Função principal da aplicação"""
+    
+    # Criar header
+    create_header()
+    
+    # Carregar dados
+    with st.spinner("🔄 Carregando dados da NFL..."):
+        df, teams_df, summary = load_data()
+    
+    if df is None:
+        st.error("❌ Não foi possível carregar os dados. Verifique se os arquivos estão disponíveis.")
+        return
+    
+    # Criar filtros na sidebar
+    filters = create_sidebar_filters(df, teams_df)
+    
+    # Aplicar filtros
+    filtered_df = filter_data(df, filters)
+    
+    if filtered_df.empty:
+        st.warning("⚠️ Nenhum dado encontrado com os filtros selecionados.")
+        return
+    
+    # Criar métricas de visão geral
+    create_overview_metrics(filtered_df)
+    
+    # Criar tabs principais
+    tab1, tab2, tab3 = st.tabs([
+        "👤 Player Insights", 
+        "📊 Rankings & Tendências", 
+        "🌐 League Insights"
+    ])
+    
+    with tab1:
+        # 1. Perfil do Jogador
+        player_data = create_player_profile(filtered_df, teams_df)
+        
+        if player_data is not None:
+            # 2. Gráficos do jogador (usando placeholders para as funções originais)
+            st.markdown("### 📈 Performance ao Longo do Tempo (Placeholder)")
+            st.info("Visualizações de timeline e dual-bar chart seriam exibidas aqui.")
+            
+            # 3. Teammate Impact (Com as novas colunas)
+            create_teammate_impact_analysis(player_data, filtered_df)
+            
+            # 4. Player KPIs (Novos KPIs)
+            create_player_kpis(player_data, filtered_df)
+            
+    with tab2:
+        st.markdown("### 🏆 Rankings por Posição (Placeholder)")
+        st.info("Rankings e análises de tendência por posição seriam exibidos aqui.")
+        
+    with tab3:
+        # League Insights (Novas tabelas)
+        create_league_insights(filtered_df, teams_df)
+
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; color: #cbd5e0; padding: 1rem;">
+        <p>🏈 NFL Fantasy Analytics Dashboard | Dados: nfl-data-py | Desenvolvido com Streamlit</p>
+        <p>📅 Dados atualizados até: {}</p>
+    </div>
+    """.format(datetime.now().strftime("%d/%m/%Y")), unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
