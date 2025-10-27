@@ -746,13 +746,20 @@ elif page == "Player Insights":
         avg_with = player_fp_by_game.loc[list(with_games)].mean() if with_games else np.nan
         avg_without = player_fp_by_game.loc[list(without_games)].mean() if without_games else np.nan
 
-        results.append({"Teammate": tm_name, "With": avg_with, "Without": avg_without})
+        # Modify results.append to include game counts
+results.append({
+    "Teammate": tm_name,
+    "With": avg_with,
+    "Without": avg_without,
+    "Games With": len(with_games),
+    "Games Without": len(without_games)
+})
 
-    impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
-    show_df = impact_df.copy()
-    for c in ["With","Without"]:
-        show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-    st.dataframe(show_df, use_container_width=True)
+impact_df = pd.DataFrame(results).sort_values("With", ascending=False)
+show_df = impact_df.copy()
+for c in ["With","Without"]:
+    show_df[c] = show_df[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+st.dataframe(show_df, use_container_width=True)
 
 # =========================
 # League Insights Page (season filter only here)
@@ -836,6 +843,33 @@ elif page == "League Insights":
 
     st.markdown("---")
     st.markdown("### Position distribution in Top brackets")
+
+# Fantasy points allowed by stat per team
+stat_weights = {
+    "PTS": s["points"],
+    "OREB": s["oreb"],
+    "DREB": s["dreb"],
+    "AST": s["assist"],
+    "STL": s["steal"],
+    "BLK": s["block"],
+    "TOV": s["turnover"],
+    "STEAL": s["steal"]
+}
+team_stats = {}
+for stat, weight in stat_weights.items():
+    if stat == "STEAL":
+        stat_fp = df_s["STL"].fillna(0) * weight
+    else:
+        stat_fp = df_s[stat].fillna(0) * weight
+    df_s[f"{stat}_FP"] = stat_fp
+    team_avg = df_s.groupby("OPPONENT_ABBREVIATION")[f"{stat}_FP"].mean().reset_index()
+    team_avg.columns = ["Team", f"{stat} FPTS Allowed"]
+    team_stats[stat] = team_avg.sort_values(f"{stat} FPTS Allowed", ascending=False)
+
+# Display tables
+for stat, table in team_stats.items():
+    st.markdown(f"### {stat} Fantasy Points Allowed by Team")
+    st.dataframe(table, use_container_width=True)
 
     # Rank players by avg fpts (season), then count POS_PRIMARY in ranges
     per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
