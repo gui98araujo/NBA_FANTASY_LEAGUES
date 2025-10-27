@@ -557,96 +557,6 @@ elif page == "Records":
 
 # =========================
 # Player Insights Page (Generate Insights button) – league-wide position rank
-
-# Add Games With and Games Without columns
-results.append({
-    "Teammate": tm_name,
-    "With": avg_with,
-    "Without": avg_without,
-    "Games With": len(with_games),
-    "Games Without": len(without_games)
-})
-
-# Additional KPIs for fantasy point contributions
-avg_pts_fp = (s["points"] * p_games["PTS"]).mean()
-avg_oreb_fp = (s["oreb"] * p_games["OREB"]).mean()
-avg_dreb_fp = (s["dreb"] * p_games["DREB"]).mean()
-avg_blk_fp = (s["block"] * p_games["BLK"]).mean()
-avg_stl_fp = (s["steal"] * p_games["STL"]).mean()
-avg_ast_fp = (s["assist"] * p_games["AST"]).mean()
-avg_to_fp = (s["turnover"] * p_games["TOV"]).mean()
-avg_foul_fp = s["tech_foul"] * p_games.get("TECH", 0).mean() + s["flagrant_foul"] * p_games.get("FLAGRANT", 0).mean()
-
-# Display additional KPIs
-k5, k6, k7, k8 = st.columns(4)
-with k5:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS from PTS</div>
-    <div class="kpi-value">{avg_pts_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-with k6:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS from OREB</div>
-    <div class="kpi-value">{avg_oreb_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-with k7:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS from DREB</div>
-    <div class="kpi-value">{avg_dreb_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-with k8:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS from BLK</div>
-    <div class="kpi-value">{avg_blk_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-k9, k10, k11, k12 = st.columns(4)
-with k9:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS from STL</div>
-    <div class="kpi-value">{avg_stl_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-with k10:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS from AST</div>
-    <div class="kpi-value">{avg_ast_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-with k11:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS lost by TO</div>
-    <div class="kpi-value">{avg_to_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-with k12:
-    st.markdown(f"""
-    <div class="kpi-card">
-    <div class="kpi-title">FPTS lost by FOUL</div>
-    <div class="kpi-value">{avg_foul_fp:.2f}</div>
-    <div class="kpi-sub">avg per game</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
 # =========================
 elif page == "Player Insights":
     st.title("📊 Player Insights")
@@ -846,33 +756,6 @@ elif page == "Player Insights":
 
 # =========================
 # League Insights Page (season filter only here)
-
-# Fantasy points allowed by stat per team
-team_defense = df_s.groupby("OPPONENT_ABBREVIATION").agg({
-    "PTS": lambda x: s["points"] * x.mean(),
-    "REB": lambda x: s["oreb"] * x.mean() if "OREB" in df_s.columns else 0 + s["dreb"] * x.mean() if "DREB" in df_s.columns else 0,
-    "AST": lambda x: s["assist"] * x.mean(),
-    "STL": lambda x: s["steal"] * x.mean(),
-    "BLK": lambda x: s["block"] * x.mean(),
-    "TOV": lambda x: s["turnover"] * x.mean()
-}).reset_index().rename(columns={"OPPONENT_ABBREVIATION": "Team"})
-
-# Display sorted tables
-for stat in ["PTS", "REB", "AST", "STL", "BLK", "TOV"]:
-    sorted_df = team_defense[["Team", stat]].sort_values(stat, ascending=False)
-    st.markdown(f"#### Fantasy Points Allowed by {stat}")
-    st.dataframe(sorted_df, use_container_width=True)
-
-# Additional tables for TO and STL losses
-to_loss = df_s.groupby("TEAM_ABBREVIATION")["TOV"].mean().mul(s["turnover"]).reset_index().rename(columns={"TEAM_ABBREVIATION": "Team", "TOV": "Avg FPTS lost by TO"})
-st.markdown("#### Teams causing most FPTS loss by TO")
-st.dataframe(to_loss.sort_values("Avg FPTS lost by TO", ascending=False), use_container_width=True)
-
-stl_gain = df_s.groupby("TEAM_ABBREVIATION")["STL"].mean().mul(s["steal"]).reset_index().rename(columns={"TEAM_ABBREVIATION": "Team", "STL": "Avg FPTS gained by STL"})
-st.markdown("#### Teams causing most FPTS gain by STL")
-st.dataframe(stl_gain.sort_values("Avg FPTS gained by STL", ascending=False), use_container_width=True)
-
-
 # =========================
 elif page == "League Insights":
     st.title("📈 League Insights")
