@@ -1071,26 +1071,26 @@ def render_heatmap_table(df, value_col, title):
         st.markdown(f"#### {title}")
 render_heatmap_table(table, 'table', '#### {title}')
 
-    # 3. Renderizar as tabelas de FPTS Cedidos (positivos)
-    st.markdown("##### Teams Allowing the Most Fantasy Points by Positive Stats")
+# 3. Renderizar as tabelas de FPTS Cedidos (positivos)
+st.markdown("##### Teams Allowing the Most Fantasy Points by Positive Stats")
     
-    create_table(team_stats_cedidas_avg.copy(), "PTS", s["points"], "Average FPTS Allowed by PTS")
-    create_table(team_stats_cedidas_avg.copy(), "OREB", s["oreb"], "Average FPTS Allowed by OREB")
-    create_table(team_stats_cedidas_avg.copy(), "DREB", s["dreb"], "Average FPTS Allowed by DREB")
-    create_table(team_stats_cedidas_avg.copy(), "AST", s["assist"], "Average FPTS Allowed by AST")
-    create_table(team_stats_cedidas_avg.copy(), "STL", s["steal"], "Average FPTS Allowed by STL")
-    create_table(team_stats_cedidas_avg.copy(), "BLK", s["block"], "Average FPTS Allowed by BLK")
+create_table(team_stats_cedidas_avg.copy(), "PTS", s["points"], "Average FPTS Allowed by PTS")
+create_table(team_stats_cedidas_avg.copy(), "OREB", s["oreb"], "Average FPTS Allowed by OREB")
+create_table(team_stats_cedidas_avg.copy(), "DREB", s["dreb"], "Average FPTS Allowed by DREB")
+create_table(team_stats_cedidas_avg.copy(), "AST", s["assist"], "Average FPTS Allowed by AST")
+create_table(team_stats_cedidas_avg.copy(), "STL", s["steal"], "Average FPTS Allowed by STL")
+create_table(team_stats_cedidas_avg.copy(), "BLK", s["block"], "Average FPTS Allowed by BLK")
 
-    # 4. Renderizar as tabelas de FPTS Perdidos (negativos)
-    st.markdown("##### Teams Causing the Most Fantasy Point Loss in Opponents")
+# 4. Renderizar as tabelas de FPTS Perdidos (negativos)
+st.markdown("##### Teams Causing the Most Fantasy Point Loss in Opponents")
     
-    # Times que geram maior perda de fantasy points por turnovers (TO)
-    create_table(team_stats_cedidas_avg.copy(), "TOV", s["turnover"], "Average FPTS Lost by TOV", is_loss=True)
+# Times que geram maior perda de fantasy points por turnovers (TO)
+create_table(team_stats_cedidas_avg.copy(), "TOV", s["turnover"], "Average FPTS Lost by TOV", is_loss=True)
     
-    # Times que geram maior perda de fantasy points por faltas (FOUL) - Usando PF
-    # O cálculo de PF está incluído em team_stats_cedidas_avg
-    s_foul = s.get("personal_foul", -0.5)
-    create_table(team_stats_cedidas_avg.copy(), "PF", s_foul, "Average FPTS Lost by FOUL (PF)", is_loss=True)
+# Times que geram maior perda de fantasy points por faltas (FOUL) - Usando PF
+# O cálculo de PF está incluído em team_stats_cedidas_avg
+s_foul = s.get("personal_foul", -0.5)
+create_table(team_stats_cedidas_avg.copy(), "PF", s_foul, "Average FPTS Lost by FOUL (PF)", is_loss=True)
     
     # Times que geram maior perda de fantasy points por steals (STL) - Este pedido é ambíguo.
     # Se for "perda" por STL, significa que o time tem muitos roubos (STL) e isso é uma estatística positiva.
@@ -1116,9 +1116,9 @@ render_heatmap_table(table, 'table', '#### {title}')
     # Nota: O cálculo de FPTS cedidos por STL já está na seção de FPTS Cedidos por Fundamento Positivo.
     # Se a intenção era o time que mais **sofre** roubos (STL), o cálculo é o mesmo de FPTS cedidos por STL.
     # Vou manter o cálculo de STL na seção positiva e adicionar uma nota.
-    st.markdown("---")
-    st.markdown("##### Note about Steals (STL)")
-    st.markdown("A tabela de 'Average FPTS Allowed by STL' mostra os times que mais cedem Fantasy Points devido aos roubos de bola do adversário. Isso atende ao requisito de 'Times que geram maior perda de fantasy points por steals (STL)', pois um time que cede mais STL está sofrendo mais perda de FPTS para o adversário.")
+st.markdown("---")
+st.markdown("##### Note about Steals (STL)")
+st.markdown("A tabela de 'Average FPTS Allowed by STL' mostra os times que mais cedem Fantasy Points devido aos roubos de bola do adversário. Isso atende ao requisito de 'Times que geram maior perda de fantasy points por steals (STL)', pois um time que cede mais STL está sofrendo mais perda de FPTS para o adversário.")
     # ====== END PATCHED SECTION ======
 
 # =========================
