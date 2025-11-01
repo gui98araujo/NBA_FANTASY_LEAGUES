@@ -1,4 +1,4 @@
-# app.py
+ app.py
 # -*- coding: utf-8 -*-
 import time
 import random
@@ -894,10 +894,33 @@ elif page == "League Insights":
     df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
     df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
 
-    st.markdown("### Position boxplot (FPTS by position)")
+    
+    # --- Funções Auxiliares para Heatmap e Tradução ---
+    def apply_heatmap_style(df: pd.DataFrame, column: str, is_loss: bool):
+        # Converte a coluna para numérico, ignorando erros (para manter 'Time' como string)
+        df_numeric = df.copy()
+        df_numeric[column] = pd.to_numeric(df_numeric[column], errors='coerce')
+        
+        # Define o cmap (colormap)
+        # Para estatísticas positivas (is_loss=False): maior é melhor (verde), então 'RdYlGn' (Red-Yellow-Green)
+        # Para estatísticas negativas/perdas (is_loss=True): menor é melhor (verde), então 'RdYlGn_r' (reverso)
+        cmap = 'RdYlGn_r' if is_loss else 'RdYlGn'
+        
+        # Aplica o estilo
+        return df_numeric.style.background_gradient(cmap=cmap, subset=[column]) \
+                               .format({column: "{:.2f}"}).hide(axis="index")
+    
+    titles_pt_to_en = {'Média de FPTS Cedidos por PTS': 'Avg FPTS Allowed by PTS', 'Média de FPTS Cedidos por OREB': 'Avg FPTS Allowed by OREB', 'Média de FPTS Cedidos por DREB': 'Avg FPTS Allowed by DREB', 'Média de FPTS Cedidos por AST': 'Avg FPTS Allowed by AST', 'Média de FPTS Cedidos por STL': 'Avg FPTS Allowed by STL', 'Média de FPTS Cedidos por BLK': 'Avg FPTS Allowed by BLK', 'Média de FPTS Perdidos por TOV': 'Avg FPTS Lost by TOV', 'Média de FPTS Perdidos por FOUL (PF)': 'Avg FPTS Lost by FOUL (PF)'}
+    # --- Fim Funções Auxiliares ---
+    
+st.markdown("### Position boxplot (FPTS by position)")
+    
+    # Remove a posição 'U' (Unknown) da análise de boxplot
+    df_s_filtered = df_s[df_s["POS_PRIMARY"] != "U"].copy()
+    
     try:
         import altair as alt
-        bp = alt.Chart(df_s).mark_boxplot(outliers=True).encode(
+        bp = alt.Chart(df_s_filtered).mark_boxplot(outliers=True).encode(
             x=alt.X("POS_PRIMARY:N", title="Position (primary: G/F/C/U)"),
             y=alt.Y("fantasy_points:Q", title="Fantasy points (per game)"),
             color=alt.Color("POS_PRIMARY:N", legend=None)
@@ -946,7 +969,11 @@ elif page == "League Insights":
     # Rank players by avg fpts (season), then count POS_PRIMARY in ranges
     per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
         avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")
+    ).sort_values("avg_fp", ascending=False).reset_index(drop=True)per_player = df_s.groupby(["PLAYER_ID","PLAYER_NAME","POS_PRIMARY"], as_index=False).agg(
+        avg_fp=("fantasy_points","mean"), GP=("GAME_ID","nunique")
     ).sort_values("avg_fp", ascending=False).reset_index(drop=True)
+    # Remove a posição 'U' (Unknown) da análise de distribuição em Top brackets
+    per_player = per_player[per_player["POS_PRIMARY"] != "U"].copy()
 
     def count_pos_in_range(dfpp, start, end):
         sl = dfpp.iloc[start:end]
@@ -956,7 +983,7 @@ elif page == "League Insights":
     top50_100 = count_pos_in_range(per_player, 50, 100)
     top100_150 = count_pos_in_range(per_player, 100, 150)
     dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
-    dist = dist.reindex(["G","F","C","U"]).fillna(0).astype(int)
+    dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)
 
     st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
 
@@ -1013,7 +1040,7 @@ elif page == "League Insights":
     st.dataframe(styled, use_container_width=True)
     
     st.markdown("---")
-    st.markdown("### Fantasy Points Cedidos por Fundamento (por time adversário)")
+    st.markdown("### Fantasy Points Allowed by Opponent Team (by Category)")
 
     # 1. Preparar o DataFrame para análise de adversários (cedidos)
     # O df_s tem os logs de jogo do ponto de vista do jogador.
@@ -1044,29 +1071,33 @@ elif page == "League Insights":
     s = st.session_state["scoring"]
     
     # 2. Funções auxiliares para criar e renderizar as tabelas
-    def create_table(df_avg, stat_col, weight, title, is_loss=False):
+    
+    def create_table(df_avg, stat_col, weight, title_pt, is_loss=False):
+        # Tradução do título
+        title_en = titles_pt_to_en.get(title_pt, title_pt)
+        
         # Calcula os FPTS cedidos/perdidos
-        fpts_col_name = f"FPTS {'Perdidos' if is_loss else 'Cedidos'} por {stat_col}"
+        fpts_col_name_en = f"Avg FPTS {'Lost' if is_loss else 'Allowed'} by {stat_col}"
+        
         if is_loss:
             # Para TOV e FOUL (PF), a perda é o valor absoluto do peso * média
-            df_avg[fpts_col_name] = df_avg[stat_col] * abs(weight)
-            # Para STL, a perda é o FPTS ganho pelo adversário (que é positivo), então o peso é positivo
-            if stat_col == "STL":
-                 df_avg[fpts_col_name] = df_avg[stat_col] * weight
-            # Para TOV, o peso é negativo, então abs(weight) é positivo, resultando em perda positiva.
+            df_avg[fpts_col_name_en] = df_avg[stat_col] * abs(weight)
         else:
             # Para estatísticas positivas (PTS, REB, AST, BLK, STL), o FPTS cedido é o valor positivo
-            df_avg[fpts_col_name] = df_avg[stat_col] * weight
+            df_avg[fpts_col_name_en] = df_avg[stat_col] * weight
         
         # Seleciona e formata a tabela
-        table = df_avg[["Time", fpts_col_name]].sort_values(fpts_col_name, ascending=False).reset_index(drop=True)
-        table[fpts_col_name] = table[fpts_col_name].map(lambda x: f"{x:.2f}")
+        table = df_avg[["Time", fpts_col_name_en]].sort_values(fpts_col_name_en, ascending=False).reset_index(drop=True)
         
-        st.markdown(f"#### {title}")
-        st.dataframe(table, use_container_width=True)
+        # Aplica o mapa de calor
+        styled_table = apply_heatmap_style(table, fpts_col_name_en, is_loss)
+        
+        st.markdown(f"#### {title_en}")
+        st.dataframe(styled_table, use_container_width=True)
+    
 
     # 3. Renderizar as tabelas de FPTS Cedidos (positivos)
-    st.markdown("##### Times que mais cedem Fantasy Points por Fundamento Positivo")
+    st.markdown("##### Teams that allow the most Fantasy Points (Positive Categories)")
     
     create_table(team_stats_cedidas_avg.copy(), "PTS", s["points"], "Média de FPTS Cedidos por PTS")
     create_table(team_stats_cedidas_avg.copy(), "OREB", s["oreb"], "Média de FPTS Cedidos por OREB")
@@ -1076,7 +1107,7 @@ elif page == "League Insights":
     create_table(team_stats_cedidas_avg.copy(), "BLK", s["block"], "Média de FPTS Cedidos por BLK")
 
     # 4. Renderizar as tabelas de FPTS Perdidos (negativos)
-    st.markdown("##### Times que mais geram Perda de Fantasy Points no Adversário")
+    st.markdown("##### Teams that generate the most Fantasy Point Loss (Negative Categories)")
     
     # Times que geram maior perda de fantasy points por turnovers (TO)
     create_table(team_stats_cedidas_avg.copy(), "TOV", s["turnover"], "Média de FPTS Perdidos por TOV", is_loss=True)
