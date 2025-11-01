@@ -892,7 +892,8 @@ elif page == "League Insights":
     df_s = df_s.merge(pos_map_df, on="PLAYER_ID", how="left")
     # Fallback letter (if any missing)
     df_s["POS_PRIMARY"] = df_s["POSITION"].fillna("").apply(primary_position_letter)
-    df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})  # U = Unknown
+    df_s["POS_PRIMARY"] = df_s["POS_PRIMARY"].replace({"": "U"})
+df_s = df_s[df_s["POS_PRIMARY"] != "U"]  # Remove Unknown
 
     st.markdown("### Position boxplot (FPTS by position)")
     try:
@@ -956,7 +957,7 @@ elif page == "League Insights":
     top50_100 = count_pos_in_range(per_player, 50, 100)
     top100_150 = count_pos_in_range(per_player, 100, 150)
     dist = pd.concat([top50, top50_100, top100_150], axis=1).fillna(0).astype(int)
-    dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)
+    dist = dist.reindex(["G","F","C"]).fillna(0).astype(int)  # Removed U
 
     st.dataframe(dist.reset_index().rename(columns={"index":"Pos"}), use_container_width=True)
 
@@ -1013,7 +1014,7 @@ elif page == "League Insights":
     st.dataframe(styled, use_container_width=True)
     
     st.markdown("---")
-    st.markdown("### Fantasy Points Allowed by Stat (by Opponent Team)")
+    st.markdown("### Fantasy Points Allowed by Stat (per Opponent Team)")
 
     # 1. Preparar o DataFrame para análise de adversários (cedidos)
     # O df_s tem os logs de jogo do ponto de vista do jogador.
@@ -1044,12 +1045,6 @@ elif page == "League Insights":
     s = st.session_state["scoring"]
     
     # 2. Funções auxiliares para criar e renderizar as tabelas
-
-def render_heatmap_table(df, value_col, title):
-    df[value_col] = df[value_col].astype(float)
-    styled = df.style.background_gradient(cmap='RdYlGn', subset=[value_col]).format({value_col: "{:.2f}"})
-    st.markdown(f"#### {title}")
-    st.dataframe(styled, use_container_width=True)
     def create_table(df_avg, stat_col, weight, title, is_loss=False):
         # Calcula os FPTS cedidos/perdidos
         fpts_col_name = f"FPTS {'Perdidos' if is_loss else 'Cedidos'} por {stat_col}"
@@ -1069,28 +1064,28 @@ def render_heatmap_table(df, value_col, title):
         table[fpts_col_name] = table[fpts_col_name].map(lambda x: f"{x:.2f}")
         
         st.markdown(f"#### {title}")
-render_heatmap_table(table, 'table', '#### {title}')
+        render_heatmap_table(table, "Average FPTS Allowed by PTS", "Average FPTS Allowed by PTS")
 
-# 3. Renderizar as tabelas de FPTS Cedidos (positivos)
-st.markdown("##### Teams Allowing the Most Fantasy Points by Positive Stats")
+    # 3. Renderizar as tabelas de FPTS Cedidos (positivos)
+    st.markdown("##### Teams Allowing the Most Fantasy Points by Positive Stats")
     
-create_table(team_stats_cedidas_avg.copy(), "PTS", s["points"], "Average FPTS Allowed by PTS")
-create_table(team_stats_cedidas_avg.copy(), "OREB", s["oreb"], "Average FPTS Allowed by OREB")
-create_table(team_stats_cedidas_avg.copy(), "DREB", s["dreb"], "Average FPTS Allowed by DREB")
-create_table(team_stats_cedidas_avg.copy(), "AST", s["assist"], "Average FPTS Allowed by AST")
-create_table(team_stats_cedidas_avg.copy(), "STL", s["steal"], "Average FPTS Allowed by STL")
-create_table(team_stats_cedidas_avg.copy(), "BLK", s["block"], "Average FPTS Allowed by BLK")
+    create_table(team_stats_cedidas_avg.copy(), "PTS", s["points"], "Average FPTS Allowed by PTS")
+    create_table(team_stats_cedidas_avg.copy(), "OREB", s["oreb"], "Average FPTS Allowed by OREB")
+    create_table(team_stats_cedidas_avg.copy(), "DREB", s["dreb"], "Average FPTS Allowed by DREB")
+    create_table(team_stats_cedidas_avg.copy(), "AST", s["assist"], "Average FPTS Allowed by AST")
+    create_table(team_stats_cedidas_avg.copy(), "STL", s["steal"], "Average FPTS Allowed by STL")
+    create_table(team_stats_cedidas_avg.copy(), "BLK", s["block"], "Average FPTS Allowed by BLK")
 
-# 4. Renderizar as tabelas de FPTS Perdidos (negativos)
-st.markdown("##### Teams Causing the Most Fantasy Point Loss in Opponents")
+    # 4. Renderizar as tabelas de FPTS Perdidos (negativos)
+    st.markdown("##### Teams Causing the Most Fantasy Point Loss in Opponents")
     
-# Times que geram maior perda de fantasy points por turnovers (TO)
-create_table(team_stats_cedidas_avg.copy(), "TOV", s["turnover"], "Average FPTS Lost by TOV", is_loss=True)
+    # Times que geram maior perda de fantasy points por turnovers (TO)
+    create_table(team_stats_cedidas_avg.copy(), "TOV", s["turnover"], "Average FPTS Lost by TOV", is_loss=True)
     
-# Times que geram maior perda de fantasy points por faltas (FOUL) - Usando PF
-# O cálculo de PF está incluído em team_stats_cedidas_avg
-s_foul = s.get("personal_foul", -0.5)
-create_table(team_stats_cedidas_avg.copy(), "PF", s_foul, "Average FPTS Lost by FOUL (PF)", is_loss=True)
+    # Times que geram maior perda de fantasy points por faltas (FOUL) - Usando PF
+    # O cálculo de PF está incluído em team_stats_cedidas_avg
+    s_foul = s.get("personal_foul", -0.5)
+    create_table(team_stats_cedidas_avg.copy(), "PF", s_foul, "Average FPTS Lost by FOUL (PF)", is_loss=True)
     
     # Times que geram maior perda de fantasy points por steals (STL) - Este pedido é ambíguo.
     # Se for "perda" por STL, significa que o time tem muitos roubos (STL) e isso é uma estatística positiva.
@@ -1116,11 +1111,66 @@ create_table(team_stats_cedidas_avg.copy(), "PF", s_foul, "Average FPTS Lost by 
     # Nota: O cálculo de FPTS cedidos por STL já está na seção de FPTS Cedidos por Fundamento Positivo.
     # Se a intenção era o time que mais **sofre** roubos (STL), o cálculo é o mesmo de FPTS cedidos por STL.
     # Vou manter o cálculo de STL na seção positiva e adicionar uma nota.
-st.markdown("---")
-st.markdown("##### Note about Steals (STL)")
-st.markdown("A tabela de 'Average FPTS Allowed by STL' mostra os times que mais cedem Fantasy Points devido aos roubos de bola do adversário. Isso atende ao requisito de 'Times que geram maior perda de fantasy points por steals (STL)', pois um time que cede mais STL está sofrendo mais perda de FPTS para o adversário.")
+    st.markdown("---")
+    st.markdown("##### Note about Steals (STL)")
+    st.markdown("A tabela de 'Average FPTS Allowed by STL' mostra os times que mais cedem Fantasy Points devido aos roubos de bola do adversário. Isso atende ao requisito de 'Times que geram maior perda de fantasy points por steals (STL)', pois um time que cede mais STL está sofrendo mais perda de FPTS para o adversário.")
     # ====== END PATCHED SECTION ======
 
 # =========================
 # Chat Page (GPT‑3.5) – opcional
 # =========================
+elif page == "Chat":
+    st.title("💬 Fantasy NBA Chat")
+    st.caption("Ask anything about NBA Fantasy. This uses OpenAI GPT‑3.5. Free usage depends on your account limits.")
+
+    if "OPENAI_API_KEY" not in st.session_state:
+        st.session_state["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
+
+    with st.expander("API Key (optional override)"):
+        key_in = st.text_input("OpenAI API Key (stored only for this session)", type="password", value=st.session_state["OPENAI_API_KEY"])
+        if st.button("Use this key for this session"):
+            st.session_state["OPENAI_API_KEY"] = key_in
+            st.success("API key set for this session.")
+
+    if st.session_state["OPENAI_API_KEY"]:
+        openai.api_key = st.session_state["OPENAI_API_KEY"]
+
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask me anything about NBA Fantasy..."):
+        st.session_state["messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role":"system","content":"You are an NBA Fantasy expert assistant."}] + st.session_state["messages"],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                reply = resp.choices[0].message["content"]
+            except Exception as e:
+                reply = f"⚠️ Sorry, I couldn't reach the chat service. Error: {e}\n\nTip: Check your API key and quota."
+            st.markdown(reply)
+            st.session_state["messages"].append({"role": "assistant", "content": reply})
+
+# Apply heatmap styling to the 9 tables
+def render_heatmap_table(df, value_column, title):
+    df[value_column] = pd.to_numeric(df[value_column], errors='coerce')
+    styled = df.style.background_gradient(cmap='RdYlGn_r', subset=[value_column]).format({value_column: "{:.2f}"})
+    st.markdown(f"#### {title}")
+    st.dataframe(styled, use_container_width=True)
+
+# =========================
+# Suggested Visual Insights (Future Enhancements)
+# =========================
+# - Identify players with highest standard deviation in fantasy points (potential sleepers).
+# - Analyze player performance variation against specific opponent teams.
+# - Compare team defense performance between home and away games to find largest variations.
